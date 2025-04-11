@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <fcntl.h>
 #include <openssl/hmac.h>
 #include <security/pam_appl.h>
 #include <security/pam_ext.h>
@@ -62,6 +63,15 @@ static int tpm_function(const char *sudoUser, const char *exec,
 PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc,
                                    const char **argv) {
   int retval;
+  if (flags & PAM_SILENT) {
+    int out = open("/dev/null", O_WRONLY);
+    if (out == -1) {
+      return PAM_AUTH_ERR;
+    }
+    dup2(out, STDERR_FILENO);
+    dup2(out, STDOUT_FILENO);
+    close(out);
+  }
 
   const char *pUsername;
   retval = pam_get_user(pamh, &pUsername, NULL);
@@ -99,26 +109,33 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc,
   }
   const size_t authTokenLen = strlen(pAuthToken);
 
-  char credHash[EVP_MAX_MD_SIZE];
-  char resultHash[EVP_MAX_MD_SIZE];
+  char hashBuffers[2][EVP_MAX_MD_SIZE];
+  size_t nextHash = 0;
   unsigned int hashLen;
 
-  const unsigned char *pCredHash =
-      HMAC(EVP_sha256(), pAuthToken, authTokenLen, (unsigned char *)pUsername, usernameLen,
-           (unsigned char *)&credHash, &hashLen);
-  assert(hashLen == 32);
-  if (pCredHash == NULL) {
-    fprintf(stderr, "HMAC failed\n");
-    return PAM_SUCCESS;
-  }
-  const char tpm_hash[] = "TPM PCR Hash";
   const unsigned char *pResultHash =
-      HMAC(EVP_sha256(), pCredHash, hashLen, tpm_hash, ARR_LEN(tpm_hash),
-           (char *)&resultHash, &hashLen);
+      HMAC(EVP_sha256(), pAuthToken, authTokenLen, (unsigned char *)pUsername,
+           usernameLen, (unsigned char *)&hashBuffers[nextHash ^= 1], &hashLen);
   assert(hashLen == 32);
   if (pResultHash == NULL) {
     fprintf(stderr, "HMAC failed\n");
-    return PAM_SUCCESS;
+    return PAM_AUTH_ERR;
+  }
+  for (int i = 0; i < argc; ++i) {
+    int separator = -1;
+    if (sscanf(argv[i], "hmac_msg=%n", &separator) == 0 && separator != -1) {
+      const char *msg = argv[i] + separator;
+      size_t msgLen = strlen(msg);
+      pResultHash =
+          HMAC(EVP_sha256(), pResultHash, hashLen, (const unsigned char *)msg,
+               msgLen, (unsigned char *)&hashBuffers[nextHash ^= 1], &hashLen);
+      assert(hashLen == 32);
+    }
+  }
+  assert(hashLen == 32);
+  if (pResultHash == NULL) {
+    fprintf(stderr, "HMAC failed\n");
+    return PAM_AUTH_ERR;
   }
   const unsigned char hashOutput[65];
   for (int i = 0; i < 32; ++i) {
@@ -127,16 +144,16 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc,
   char outputBuf[128];
   snprintf((char *)&outputBuf, ARR_LEN(outputBuf), "%u", pcrRegister);
 
-  if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrreset", (char *)&outputBuf) ==
-      -1) {
+  if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrreset", (char *)&outputBuf) !=
+      0) {
     fprintf(stderr, "tpm2_pcrreset failed\n");
-    return PAM_SUCCESS;
+    return PAM_AUTH_ERR;
   }
   snprintf((char *)&outputBuf, ARR_LEN(outputBuf), "%u:sha256=%s", pcrRegister,
            hashOutput);
-  if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrextend", outputBuf) == -1) {
+  if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrextend", outputBuf) != 0) {
     fprintf(stderr, "tpm2_pcrextend failed\n");
-    return PAM_SUCCESS;
+    return PAM_AUTH_ERR;
   }
 
   return PAM_SUCCESS;
