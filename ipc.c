@@ -28,6 +28,7 @@ int msg_content_length(msg_info_t info) {
   case MSG_AUTHENTICATE:
   case MSG_HASH_FINALIZED:
   case MSG_HASH_DATA:
+  case MSG_UPDATE_PASSWORD:
     return 1;
   case MSG_PEER_EOF:
   case MSG_INVALID:

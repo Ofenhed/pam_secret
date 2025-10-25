@@ -93,7 +93,8 @@ int to_scrypt_args(scrypt_action_t *params, const char ***args, const char **arg
 scrypt_action_t default_persistent_args();
 scrypt_action_t default_session_args();
 
-int create_user_session_cred_secret(const char *user_password, int user_password_len);
+int install_user_session_cred_secret(int source_fd);
+int create_user_persistent_cred_secret(int secret_fd, const char *user_password, int user_password_len, int persistent_fd);
 
 int init_and_get_session_mask_fd();
 const char *init_and_get_session_mask();

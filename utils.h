@@ -21,6 +21,8 @@
 #define PROP_ERR_WITH(x, y) { if ((x) == -1) { { y } return -1; } }
 #define PROP_ERR(x) PROP_ERR_WITH(x, perror("Boom at " LINE "!");)
 
+#define EXPORTED __attribute__ ((visibility ("default") ))
+
 #ifdef DEBUG
 #define DEBUG_PROP_ERR(x) PROP_ERR(x)
 #else
@@ -78,6 +80,7 @@ inline static int inherit_fd_as(int fd, int fd2) {
   if (new_fd != fd) {
       close(fd);
   }
+  return new_fd;
 }
 
 int write_random_data(char *target, int secret_length);

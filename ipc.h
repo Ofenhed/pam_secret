@@ -9,6 +9,9 @@ typedef struct {
   MSG_NOT_AUTHENTICATED,
   MSG_AUTHENTICATE,
   MSG_AUTHENTICATED,
+  MSG_UPDATE_PASSWORD,
+  MSG_UPDATE_PASSWORD_SUCCESS,
+  MSG_UNKNOWN_ERROR,
 } kind;
   union {
       int data_len;

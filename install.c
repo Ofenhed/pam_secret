@@ -14,7 +14,7 @@ int maybe_create_system_secret() {
       return 0;
     }
     char tmpfile[256];
-    secret_fd = openat(wd, ".", O_TMPFILE | O_CLOEXEC | O_WRONLY, 0400);
+    secret_fd = openat(wd, ".", O_TMPFILE | O_CLOEXEC | O_RDWR, 0400);
     snprintf(tmpfile, ARR_LEN(tmpfile), "/proc/self/fd/%i", secret_fd);
     if (secret_fd == -1) {
         if (errno == EEXIST) {
@@ -48,7 +48,5 @@ int install_persistent_credentials_directory() {
   PROP_ERR(fchdir(dir_fd));
   PROP_ERR(chown(".", 0, group));
   PROP_ERR(chmod(".", cred_dir_perm));
-  PROP_ERR(chown("/proc/self/exe", 0, group));
-  PROP_ERR(chmod("/proc/self/exe", 0750));
   return 0;
 }

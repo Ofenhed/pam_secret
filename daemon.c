@@ -12,6 +12,17 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
+
+int connect_daemon() {
+  int sock;
+  struct sockaddr_un address;
+  address.sun_family = AF_UNIX;
+  PROP_ERR(get_sock_path_for_user(address.sun_path, ARR_LEN(address.sun_path)));
+  PROP_ERR(sock = socket(PF_UNIX, SOCK_STREAM, 0));
+  PROP_ERR(connect(sock, (struct sockaddr *)&address, sizeof(address)));
+  return sock;
+}
 
 typedef int server_state_t;
 
@@ -65,6 +76,7 @@ typedef struct {
     HASHER_CLIENT,
   } client_kind;
   struct ucred cred;
+  int client_has_authenticated;
   int pid;
   write_buf_t *write_buf;
   union {
@@ -121,7 +133,7 @@ peer_state_t *peer_state(struct epoll_event *ev) {
   return ev->data.ptr;
 }
 
-int run_daemon() {
+int run_daemon(int socket_not_listening) {
   char printf_buf[256];
   char *buf_ptr = printf_buf;
   const char *const buf_end = ARR_END(printf_buf);
@@ -148,6 +160,7 @@ int run_daemon() {
   state_tmp->peer_kind = SERVER;
   PROP_ERR(epoll_ctl(epollfd, EPOLL_CTL_ADD, server, &ev));
   PROP_ERR(listen(server, 5));
+  close(socket_not_listening);
   while (true) {
     struct epoll_event events[5];
     int nfds;
@@ -155,6 +168,7 @@ int run_daemon() {
     PROP_ERR(nfds = epoll_wait(epollfd, events, ARR_LEN(events), -1));
     for (int n = 0; n < nfds; ++n) {
       peer_state_t *peer = peer_state(&events[n]);
+      buf_ptr = printf_buf;
 #define HAS_OUTPUT()                                                           \
   {                                                                            \
     events[n].events |= EPOLLOUT;                                              \
@@ -271,6 +285,7 @@ int run_daemon() {
             b->info = reply;
             b = new_write_buf(&peer->client_state.write_buf);
             b->buf_kind = WRITE_BUF_CLOSE;
+            continue;
           }
           sha256_hash_t hash;
           PROP_ERR(finalize_hash(peer->client_state.hash_fd, secret_fd, &hash));
@@ -308,6 +323,7 @@ int run_daemon() {
           msg_info_t reply;
           if (authenticate_user(auth_mem, info.data_len) == 1) {
             reply.kind = MSG_AUTHENTICATED;
+            peer->client_state.client_has_authenticated |= 1;
           } else {
             reply.kind = MSG_NOT_AUTHENTICATED;
           }
@@ -315,6 +331,57 @@ int run_daemon() {
           HAS_OUTPUT();
           write_buf_t *b = new_write_buf(&peer->client_state.write_buf);
           b->info = reply;
+        } else if (info.kind == MSG_UPDATE_PASSWORD && peer->client_state.client_has_authenticated) {
+          int secret_fd;
+          if ((secret_fd = get_session_secret_fd()) == -1) {
+            HAS_OUTPUT();
+            write_buf_t *b = new_write_buf(&peer->client_state.write_buf);
+            msg_info_t reply = {0};
+            reply.kind = MSG_NOT_AUTHENTICATED;
+            b->info = reply;
+            b = new_write_buf(&peer->client_state.write_buf);
+            b->buf_kind = WRITE_BUF_CLOSE;
+            close(context[0].fd);
+          }
+          char *pw_mem;
+          if ((pw_mem = mmap(NULL, info.data_len, PROT_READ, MAP_SHARED, context[0].fd, 0)) == MAP_FAILED) {
+              close(context[0].fd);
+              return -1;
+          }
+          close(context[0].fd);
+          int output_fd = memfd_create("new_persistent", 0);
+          PROP_ERR(create_user_persistent_cred_secret(secret_fd, pw_mem, info.data_len, output_fd));
+          int child_pid;
+          PROP_ERR(child_pid = fork());
+          if (child_pid == 0) {
+              int auth_fd;
+              PROP_ERR(auth_fd = inherit_fd(get_system_secret_fd()));
+              PROP_ERR(output_fd = inherit_fd(output_fd));
+              const char *update_arg = bufnprintf(&buf_ptr, buf_end, "replace_key=%i,auth_token=%i", output_fd, auth_fd);
+              fprintf(stderr, "Running update with %s\n", update_arg);
+              char *args[] = {"/usr/sbin/pam_secret", (char*)update_arg, NULL};
+              if (execv(args[0], args) == -1) {
+                  perror("Child process execve failed");
+                  return -1;
+              }
+          } else {
+              close(output_fd);
+            int wstatus;
+            waitpid(child_pid, &wstatus, 0);
+            HAS_OUTPUT();
+            write_buf_t *b = new_write_buf(&peer->client_state.write_buf);
+            msg_info_t reply = {0};
+            reply.kind = MSG_UNKNOWN_ERROR;
+            if (!WIFEXITED(wstatus)) {
+              perror("Child process me crashed");
+            } else if (WEXITSTATUS(wstatus) == 0) {
+                reply.kind = MSG_UPDATE_PASSWORD_SUCCESS;
+                continue;
+            }
+            b->info = reply;
+            b = new_write_buf(&peer->client_state.write_buf);
+            b->buf_kind = WRITE_BUF_CLOSE;
+          }
         } else if (info.kind == MSG_CLEAR_SECRET &&
                    peer->client_state.client_kind == NEW_CLIENT) {
           lock_plain_user_secret();

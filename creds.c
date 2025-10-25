@@ -33,7 +33,8 @@ int session_encrypted_fd = -1, session_encrypted_data_len = 0,
     session_secret_fd = -1;
 
 #ifdef SYSTEM_SECRET_FILENAME_OVERRIDE
-#define SYSTEM_SECRET_FILENAME STRINGIZE_VALUE_OF(SYSTEM_SECRET_FILENAME_OVERRIDE)
+#define SYSTEM_SECRET_FILENAME                                                 \
+  STRINGIZE_VALUE_OF(SYSTEM_SECRET_FILENAME_OVERRIDE)
 #else
 #define SYSTEM_SECRET_FILENAME "enc-auth"
 #endif
@@ -165,9 +166,9 @@ int xor_secret_data_fd(int source_fd, int destination_fd) {
 }
 
 int invalidate_session_secret() {
-  if (session_secret_fd != 0) {
+  if (session_secret_fd != -1) {
     PROP_ERR(close(session_secret_fd));
-    session_secret_fd = 0;
+    session_secret_fd = -1;
   }
   return 0;
 }
@@ -458,14 +459,9 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
           if (c == 0) {
             int wstatus;
             close(result_pipe[rx]);
-            close(epollfd);
             waitpid(child_pid, &wstatus, 0);
-            ftruncate(out_secret_fd, saved_len);
             if (!WIFEXITED(wstatus)) {
-              char errmsg[256];
-              snprintf(errmsg, ARR_LEN(errmsg),
-                       "Child process scrypt crashed\n");
-              perror(errmsg);
+              perror("Child process scrypt crashed");
               CLOSE_EPOLL;
               return -1;
             } else if (WEXITSTATUS(wstatus) != 0) {
@@ -473,6 +469,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
               errno = EACCES;
               return -1;
             } else {
+              ftruncate(out_secret_fd, saved_len);
               CLOSE_EPOLL
               return saved_len;
             }
@@ -484,32 +481,52 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
   return -1;
 }
 
-int create_user_session_cred_secret(const char *user_password,
-                                    int user_password_len) {
-  const int rx = PIPE_RX;
-  const int tx = PIPE_TX;
-  char output_path[256];
-  const char *fd_path;
-  int generated;
-  int storage_fd = get_persistant_storage_fd();
-  {
-    int output_path_len;
-    PROP_ERR(output_path_len = get_uid_session_cred_persistant_path_into(
-                 getuid(), output_path, ARR_LEN(output_path)));
-    if (faccessat(storage_fd, output_path, F_OK, 0) == 0) {
-      errno = EEXIST;
-      return -1;
+int install_user_session_cred_secret(int source_fd) {
+  int output_fd, wd;
+  const uid_t uid = getuid();
+  PROP_ERR(wd = get_persistant_storage_fd());
+  PROP_ERR(output_fd = openat(wd, ".", O_TMPFILE | O_WRONLY, 0400));
+  int r, w;
+#define PROP_ERR_L(x) PROP_ERR_WITH(x, close(output_fd);)
+  char buf[4096];
+  while ((r = read(source_fd, buf, ARR_LEN(buf))) > 0) {
+    char *out_ptr = buf;
+    const char *const out_end = buf + r;
+    while (out_ptr < out_end) {
+      PROP_ERR_L(w = write(output_fd, out_ptr, out_end - out_ptr));
+      if (w == 0) {
+        errno = ENOSPC;
+        return -1;
+      }
     }
-    PROP_ERR(generated =
-                 openat(storage_fd, "..", O_TMPFILE | O_CLOEXEC | O_RDWR, 0600));
-    char *buf_ptr = output_path + output_path_len;
-    fd_path = bufnprintf(&buf_ptr, ARR_END(output_path), "/proc/self/fd/%i",
-                         generated);
   }
-  int secret_fd;
-  PROP_ERR(secret_fd = memfd_secret(O_CLOEXEC));
-  PROP_ERR(ftruncate(secret_fd, sizeof(secret_state_t)));
-  PROP_ERR(set_memfd_random(secret_fd, sizeof(secret_state_t)));
+  PROP_ERR_L(r);
+  char printf_buf[256];
+  char *printf_ptr = printf_buf;
+  const char *const printf_end = ARR_END(printf_buf);
+  int target_file_offset;
+
+  const char *tmpfile =
+      bufnprintf(&printf_ptr, printf_end, ".new-%n%s", &target_file_offset,
+                 get_uid_session_cred_persistant_path(uid));
+  const char *newfile = tmpfile + target_file_offset;
+  const char *memfile_path =
+      bufnprintf(&printf_ptr, printf_end, "/proc/self/fd/%i", output_fd);
+  assert(tmpfile != NULL && memfile_path != NULL);
+  PROP_ERR_L(linkat(AT_FDCWD, memfile_path, wd, tmpfile, AT_SYMLINK_FOLLOW));
+  close(output_fd);
+  PROP_ERR(renameat(wd, tmpfile, wd, newfile));
+  return 0;
+}
+
+int create_user_persistent_cred_secret(int secret_fd, const char *user_password,
+                                       int user_password_len,
+                                       int persistent_fd) {
+  if (secret_fd == -1) {
+    PROP_ERR(secret_fd = memfd_secret(O_CLOEXEC));
+    PROP_ERR(ftruncate(secret_fd, sizeof(secret_state_t)));
+    PROP_ERR(set_memfd_random(secret_fd, sizeof(secret_state_t)));
+  }
   secret_state_t *secret_ptr =
       mmap(0, sizeof(secret_state_t), PROT_READ, MAP_SHARED, secret_fd, 0);
   if (secret_ptr == MAP_FAILED) {
@@ -518,23 +535,20 @@ int create_user_session_cred_secret(const char *user_password,
   }
   auto params = set_scrypt_input_data(default_persistent_args(), *secret_ptr,
                                       sizeof(secret_state_t));
-  PROP_ERR(scrypt_into_fd(params, (unsigned char*)user_password, user_password_len, generated));
+  PROP_ERR(scrypt_into_fd(params, (unsigned char *)user_password,
+                          user_password_len, persistent_fd));
   PROP_ERR(munmap(secret_ptr, SECRET_LEN));
-  int umask_before = umask(~0600);
-  PROP_ERR(
-      linkat(AT_FDCWD, fd_path, storage_fd, output_path, AT_SYMLINK_FOLLOW));
-  umask(umask_before);
-  close(generated);
   return secret_fd;
 }
 
 int get_system_secret_fd() {
-    static int fd = -1;
-    if (fd == -1) {
-        int wd = get_persistant_storage_fd();
-        PROP_ERR(fd = openat(wd, get_system_secret_filename(), O_RDONLY | O_CLOEXEC, 0));
-    }
-    return fd;
+  static int fd = -1;
+  if (fd == -1) {
+    int wd = get_persistant_storage_fd();
+    PROP_ERR(
+        fd = openat(wd, get_system_secret_filename(), O_RDONLY | O_CLOEXEC, 0));
+  }
+  return fd;
 }
 
 int get_session_secret_fd() {
@@ -588,6 +602,7 @@ int unlock_persistent_user_secret(const char *password, int password_len) {
   int secret_len = scrypt_into_fd(action, password, password_len, secret_fd);
   close(persistant_fd);
   if (secret_len != sizeof(secret_state_t)) {
+    fprintf(stderr, "Invalid secret length %i\n", secret_len);
     close(secret_fd);
     return -1;
   }
@@ -602,6 +617,7 @@ int unlock_persistent_user_secret(const char *password, int password_len) {
       mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED, masked_fd, 0);
   close(masked_fd);
   if (mapped == MAP_FAILED) {
+    perror("Could not map masked");
     return -1;
   }
   action = set_scrypt_input_data(default_session_args(), *mapped,
@@ -611,6 +627,7 @@ int unlock_persistent_user_secret(const char *password, int password_len) {
       scrypt_into_fd(action, password, password_len, protected_fd);
   munmap(mapped, sizeof(secret_state_t));
   if (protected_len == -1) {
+    perror("Could not read into protected");
     close(protected_fd);
     return -1;
   }
