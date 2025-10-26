@@ -179,7 +179,6 @@ EXPORTED int exported_main(int argc, char **argv) {
       char *filename = argv[arg] + separator;
       int file;
       int filesize;
-      fprintf(stderr, "Hashing file %s\n", filename);
       PROP_ERR(file = open(filename, O_CLOEXEC | O_RDONLY, 0));
       PROP_ERR(filesize = lseek(file, 0, SEEK_END));
       PROP_ERR(lseek(file, 0, SEEK_SET));
@@ -213,7 +212,6 @@ EXPORTED int exported_main(int argc, char **argv) {
         perror("Could not map secret");
         return -1;
       }
-      fprintf(stderr, "Hashing %s\n", text);
       memcpy(secret, text, text_len);
       PROP_ERR(munmap(secret, text_len));
       msg_info_t msg;
@@ -236,6 +234,7 @@ EXPORTED int exported_main(int argc, char **argv) {
     PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
     if (info.kind == MSG_NOT_AUTHENTICATED) {
       fprintf(stderr, "Not authenticated");
+      return EACCES;
     } else if (info.kind == MSG_HASH_FINALIZED) {
       sha256_hash_hex_t *mem = mmap(NULL, sizeof(sha256_hash_hex_t), PROT_READ,
                                     MAP_SHARED, context[0].fd, 0);
@@ -243,7 +242,7 @@ EXPORTED int exported_main(int argc, char **argv) {
         perror("Could not map reply");
         return -1;
       }
-      fprintf(stderr, "%s\n", mem->printable);
+      printf("%s%s", mem->printable, isatty(1) ? "\n" : "");
       munmap(mem, sizeof(sha256_hash_hex_t));
     }
   }
