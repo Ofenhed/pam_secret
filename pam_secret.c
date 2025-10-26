@@ -158,7 +158,7 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
   }
 
   msg_info_t msg;
-  msg_context_t context[2] = {{auth_token_fd}};
+  msg_context_t context[2] = {{{auth_token_fd}}};
   msg.kind = MSG_AUTHENTICATE;
   msg.data_len = auth_token_len;
   if (send_peer_msg(sock, msg, context, 1, 0) == -1) {
@@ -199,7 +199,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       return PAM_CRED_INSUFFICIENT;
     }
     msg_info_t msg;
-    msg_context_t context[2] = {{secret_fd}};
+    msg_context_t context[2] = {{{secret_fd}}};
     msg.data_len = secret_len;
     msg.kind = MSG_UPDATE_PASSWORD;
     if (send_peer_msg(sock, msg, context, 1, 0) == -1) {

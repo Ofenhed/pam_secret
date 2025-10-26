@@ -103,7 +103,7 @@ EXPORTED int exported_main(int argc, char **argv) {
       memcpy(password_out, password, password_len);
       munmap(password_out, password_len);
       msg_info_t msg;
-      msg_context_t context[2] = {{pass_fd}};
+      msg_context_t context[2] = {{{pass_fd}}};
       msg.kind = MSG_AUTHENTICATE;
       msg.data_len = password_len;
       PROP_ERR(send_peer_msg(daemon_sock, msg, context, 1, 0));
@@ -131,7 +131,7 @@ EXPORTED int exported_main(int argc, char **argv) {
       memcpy(password_out, password, password_len);
       munmap(password_out, password_len);
       msg_info_t msg;
-      msg_context_t context[2] = {{pass_fd}};
+      msg_context_t context[2] = {{{pass_fd}}};
       msg.kind = MSG_UPDATE_PASSWORD;
       msg.data_len = password_len;
       PROP_ERR(send_peer_msg(daemon_sock, msg, context, 1, 0));
@@ -169,7 +169,8 @@ EXPORTED int exported_main(int argc, char **argv) {
           exit(EXIT_SUCCESS);
         close(socket_up_indicator[PIPE_RX]);
       }
-      run_daemon(socket_up_indicator[PIPE_TX]);
+      run_daemon(argc > 0 ? argv[0] : "pam_secret",
+                 socket_up_indicator[PIPE_TX]);
     } else if ((sscanf(argv[arg], "f=%n", &separator) == 0 &&
                 separator != -1) ||
                (sscanf(argv[arg], "file=%n", &separator) == 0 &&

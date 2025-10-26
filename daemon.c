@@ -142,7 +142,7 @@ peer_state_t *peer_state(struct epoll_event *ev) {
   return ev->data.ptr;
 }
 
-int run_daemon(int socket_not_listening) {
+int run_daemon(const char *name, int socket_not_listening) {
   char printf_buf[256];
   char *buf_ptr = printf_buf;
 #define RESET_BUF_PTR() (buf_ptr = printf_buf)
@@ -249,13 +249,13 @@ int run_daemon(int socket_not_listening) {
             fprintf(stderr,
                     "User key deleted!\nThat's someone else's problem now.\n");
             close(server);
-            execv("/proc/self/exe", (char *[]){"pam_stuff", "daemon", NULL});
+            char *args[] = {(char *)name, "daemon", NULL};
+            execv("/proc/self/exe", args);
             exit(0);
           } else if (iev_ptr->wd == inotify_run_dir_modified &&
                      strcmp(iev_ptr->name, socket_name) == 0) {
             fprintf(stderr,
-                    "They killed my socket file.\nWait for me, buddy...\n",
-                    iev_ptr->name);
+                    "They killed my socket file.\nWait for me, buddy...\n");
             close(server);
             exit(0);
           }
@@ -393,7 +393,7 @@ int run_daemon(int socket_not_listening) {
             msg_info_t reply;
             reply.kind = MSG_HASH_FINALIZED;
             b->info = reply;
-            b->context[0] = (msg_context_t){result_fd};
+            b->context[0] = (msg_context_t){{result_fd}};
             b->context_len = 1;
             b->fds_to_close[0] = result_fd;
             b->num_fds_to_close = 1;
