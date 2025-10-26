@@ -12,10 +12,7 @@ build:
 build/%.o: %.c build
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
-build/main-debug: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o
-	$(CC) $(CFLAGS) -fPIE -pie $^ -lssl -lcrypto -lcap -o $@
-
-build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_tpm2.o
+build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o
 	# $(CC) $(CFLAGS) -fPIC -fPIE -pie -shared -Wl,-soname,$@ -Wl,-e,lib_entry $^ -lssl -lcrypto -lcap -lpam -o $@
 	$(CC) $(CFLAGS) -fPIC -shared $^ -lssl -lcrypto -lcap -lpam -o $@
 
@@ -25,21 +22,10 @@ build/pam_secret-debug: build/libwrapper.o
 build/pam_secret.symbols: build/pam_secret-debug
 	objcopy --only-keep-debug $? $@
 
-build/main.symbols: build/main-debug
-	objcopy --only-keep-debug $? $@
-
 build/pam_secret: build/pam_secret-debug build/pam_secret.symbols
 	cp $< $@
 	strip --strip-debug --strip-unneeded $@
 	objcopy --add-gnu-debuglink=build/pam_secret.symbols $@
-
-build/main: build/main-debug build/main.symbols
-	cp $< $@
-	strip --strip-debug --strip-unneeded $@
-	objcopy --add-gnu-debuglink=build/main.symbols $@
-
-build/pam_tpm2.so: build/pam_tpm2.o build/utils.o build/creds.o build/hash.o
-	$(CC) -shared -fPIC -l ssl $< -o $@
 
 install-pam: build/pam_secret.so
 	install --mode=755 --owner=root --group=root --target-directory=/usr/lib64/security/ $<

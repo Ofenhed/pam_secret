@@ -29,16 +29,6 @@ EXPORTED PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
   return PAM_SUCCESS;
 }
 
-// static int tpm_function(const char *sudoUser, const char *exec,
-//                         const char *argument) {
-//   if (sudoUser == NULL) {
-//     sudoUser = "tss";
-//   }
-//   const char *tpmArgs[] = {AS_USER(sudoUser),
-//                            exec,     argument, NULL};
-//   return exec_blocking(AS_USER_BIN, tpmArgs);
-// }
-
 static int logger = 2;
 static FILE *flogger() {
   static FILE *flog = NULL;
@@ -164,7 +154,7 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
   int auth_token_len = read_auth_token(pamh, auth_token, auth_token_fd);
   if (auth_token_len == -1) {
     fprintf(flog, "Could not read auth token\n");
-    return PAM_SYSTEM_ERR;
+    return PAM_CRED_INSUFFICIENT;
   }
 
   msg_info_t msg;
@@ -206,7 +196,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
     int secret_len;
     if ((secret_len = read_auth_token(pamh, PAM_AUTHTOK, secret_fd)) == -1) {
       daemon_socket(0);
-      return PAM_SYSTEM_ERR;
+      return PAM_CRED_INSUFFICIENT;
     }
     msg_info_t msg;
     msg_context_t context[2] = {{secret_fd}};

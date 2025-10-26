@@ -38,6 +38,7 @@ int install_new_user_key(int parent_auth_fd, int new_content) {
 }
 
 EXPORTED int exported_main(int argc, char **argv) {
+  int hashed = 0;
   if (argc == 2 && strcmp("install", argv[1]) == 0) {
     PROP_ERR(install_persistent_credentials_directory());
     PROP_ERR(maybe_create_system_secret());
@@ -54,12 +55,12 @@ EXPORTED int exported_main(int argc, char **argv) {
   }
   init_privileged();
   assert_no_namespace();
-  int hash_fd = -1;
   int daemon_sock = -1;
 #define SOCKET_CONNECT()                                                       \
   {                                                                            \
-    if (daemon_sock == -1)                                                     \
-      PROP_ERR(daemon_sock = connect_daemon());                                \
+    if (daemon_sock == -1 && (daemon_sock = connect_daemon()) == -1) {         \
+      CRITICAL_ERR("No running daemon found");                                 \
+    }                                                                          \
   }
   for (int arg = 1; arg < argc; ++arg) {
     int separator = -1;
@@ -71,7 +72,7 @@ EXPORTED int exported_main(int argc, char **argv) {
         return 0;
       }
       const char *filename = get_persistent_secret_filename(getuid());
-      int new_fd, tmp_fd, dir_fd;
+      int new_fd, dir_fd;
       int result;
       PROP_ERR(dir_fd = open(".", O_DIRECTORY, 0));
       PROP_ERR(new_fd = openat(dir_fd, ".", O_RDWR | O_TMPFILE, 0600));
@@ -86,24 +87,7 @@ EXPORTED int exported_main(int argc, char **argv) {
       close(new_fd);
       close(dir_fd);
       return 0;
-    } else if (sscanf(argv[arg], "hmac=%n", &separator) == 0 &&
-               separator != -1) {
-      const char *msg = argv[arg] + separator;
-      int msg_len = strlen(msg);
-      if (hash_fd == -1) {
-        PROP_ERR(hash_fd = memfd_secret(O_CLOEXEC));
-        int secret;
-        PROP_ERR(secret = get_session_secret_fd());
-        PROP_ERR(
-            hash_init_memfd(hash_fd, secret, (unsigned char *)msg, msg_len));
-      } else {
-        PROP_ERR(hash_add(hash_fd, (unsigned char *)msg, msg_len));
-      }
-    } else if (strcmp("print_hmac", argv[arg]) == 0) {
-      sha256_hash_t hash;
-      PROP_ERR(finalize_hash(hash_fd, get_session_secret_fd(), &hash));
-      fprintf(stderr, "Hashed to %s", hash_to_hex(&hash).printable);
-    } else if (strcmp("remote_auth", argv[arg]) == 0) {
+    } else if (strcmp("auth", argv[arg]) == 0) {
       SOCKET_CONNECT();
       const char *password = getpass("Password: ");
       int pass_fd;
@@ -131,7 +115,7 @@ EXPORTED int exported_main(int argc, char **argv) {
       } else if (msg.kind == MSG_AUTHENTICATED) {
         fprintf(stderr, "Authenticated\n");
       }
-    } else if (strcmp("remote_update_pass", argv[arg]) == 0) {
+    } else if (strcmp("passwd", argv[arg]) == 0) {
       SOCKET_CONNECT();
       const char *password = getpass("New password: ");
       int pass_fd;
@@ -161,8 +145,6 @@ EXPORTED int exported_main(int argc, char **argv) {
         fprintf(stderr, "Authenticated\n");
       }
     } else if (strcmp("lock", argv[arg]) == 0) {
-      lock_plain_user_secret();
-    } else if (strcmp("remote_lock", argv[arg]) == 0) {
       SOCKET_CONNECT();
       msg_info_t msg;
       msg.kind = MSG_CLEAR_SECRET;
@@ -188,11 +170,15 @@ EXPORTED int exported_main(int argc, char **argv) {
         close(socket_up_indicator[PIPE_RX]);
       }
       run_daemon(socket_up_indicator[PIPE_TX]);
-    } else if (sscanf(argv[arg], "send_file=%n", &separator) == 0 &&
-               separator != -1) {
+    } else if ((sscanf(argv[arg], "f=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "file=%n", &separator) == 0 &&
+                separator != -1)) {
+      ++hashed;
       char *filename = argv[arg] + separator;
       int file;
       int filesize;
+      fprintf(stderr, "Hashing file %s\n", filename);
       PROP_ERR(file = open(filename, O_CLOEXEC | O_RDONLY, 0));
       PROP_ERR(filesize = lseek(file, 0, SEEK_END));
       PROP_ERR(lseek(file, 0, SEEK_SET));
@@ -202,8 +188,19 @@ EXPORTED int exported_main(int argc, char **argv) {
       msg.kind = MSG_HASH_DATA;
       msg.data_len = filesize;
       PROP_ERR(send_peer_msg(daemon_sock, msg, context, ARR_LEN(context), 0));
-    } else if (sscanf(argv[arg], "send_secret=%n", &separator) == 0 &&
-               separator != -1) {
+    } else if ((sscanf(argv[arg], "s=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "str=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "string=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "text=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "txt=%n", &separator) == 0 &&
+                separator != -1) ||
+               (sscanf(argv[arg], "t=%n", &separator) == 0 &&
+                separator != -1)) {
+      ++hashed;
       SOCKET_CONNECT();
       char *text = argv[arg] + separator;
       int text_len = strlen(text);
@@ -215,6 +212,7 @@ EXPORTED int exported_main(int argc, char **argv) {
         perror("Could not map secret");
         return -1;
       }
+      fprintf(stderr, "Hashing %s\n", text);
       memcpy(secret, text, text_len);
       PROP_ERR(munmap(secret, text_len));
       msg_info_t msg;
@@ -222,30 +220,30 @@ EXPORTED int exported_main(int argc, char **argv) {
       msg.data_len = text_len;
       msg_context_t context[] = {fd_to_context(file)};
       PROP_ERR(send_peer_msg(daemon_sock, msg, context, ARR_LEN(context), 0));
-    } else if (strcmp("fetch_hash", argv[arg]) == 0) {
-      SOCKET_CONNECT();
-      msg_info_t msg;
-      msg.kind = MSG_HASH_FINALIZE;
-      PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0, 0));
-      int len;
-      msg_info_t info;
-      msg_context_t context[2];
-      PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
-      if (info.kind == MSG_NOT_AUTHENTICATED) {
-        fprintf(stderr, "Not authenticated");
-      } else if (info.kind == MSG_HASH_FINALIZED) {
-        sha256_hash_hex_t *mem = mmap(NULL, sizeof(sha256_hash_hex_t),
-                                      PROT_READ, MAP_SHARED, context[0].fd, 0);
-        if (mem == MAP_FAILED) {
-          perror("Could not map reply");
-          return -1;
-        }
-        fprintf(stderr, "%s\n", mem->printable);
-        munmap(mem, sizeof(sha256_hash_hex_t));
-      }
     } else {
       fprintf(stderr, "Unknown command %s\n", argv[arg]);
       return -1;
+    }
+  }
+  if (hashed) {
+    msg_info_t msg;
+    msg.kind = MSG_HASH_FINALIZE;
+    PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0, 0));
+    int len;
+    msg_info_t info;
+    msg_context_t context[2];
+    PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
+    if (info.kind == MSG_NOT_AUTHENTICATED) {
+      fprintf(stderr, "Not authenticated");
+    } else if (info.kind == MSG_HASH_FINALIZED) {
+      sha256_hash_hex_t *mem = mmap(NULL, sizeof(sha256_hash_hex_t), PROT_READ,
+                                    MAP_SHARED, context[0].fd, 0);
+      if (mem == MAP_FAILED) {
+        perror("Could not map reply");
+        return -1;
+      }
+      fprintf(stderr, "%s\n", mem->printable);
+      munmap(mem, sizeof(sha256_hash_hex_t));
     }
   }
   return 0;
