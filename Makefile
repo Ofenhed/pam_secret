@@ -1,5 +1,5 @@
 #CFLAGS += -std=c23 -fvisibility=hidden -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
-CFLAGS += -std=c23 -g -D_GNU_SOURCE -DSERVICE_GROUP=qubes
+CFLAGS += -std=c23 -Wall -g -DDEBUG -D_GNU_SOURCE -DSERVICE_GROUP=qubes
 
 all: build/pam_secret.so build/pam_secret
 
@@ -16,17 +16,22 @@ build/main-debug: build/main.o build/utils.o build/creds.o build/extern.o build/
 	$(CC) $(CFLAGS) -fPIE -pie $^ -lssl -lcrypto -lcap -o $@
 
 build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_tpm2.o
-	#$(CC) $(CFLAGS) -fPIC -fPIE -pie -shared -Wl,-soname,$@ -Wl,-e,lib_entry $^ -lssl -lcrypto -lcap -lpam -o $@
+	# $(CC) $(CFLAGS) -fPIC -fPIE -pie -shared -Wl,-soname,$@ -Wl,-e,lib_entry $^ -lssl -lcrypto -lcap -lpam -o $@
 	$(CC) $(CFLAGS) -fPIC -shared $^ -lssl -lcrypto -lcap -lpam -o $@
 
-build/pam_secret: build/libwrapper.o
-	$(CC) $(CFLAGS) -fPIE -pie -ldl $^ -o $@
+build/pam_secret-debug: build/libwrapper.o
+	$(CC) $(CFLAGS) -g -fPIE -pie -ldl $^ -o $@
+
+build/pam_secret.symbols: build/pam_secret-debug
+	objcopy --only-keep-debug $? $@
 
 build/main.symbols: build/main-debug
 	objcopy --only-keep-debug $? $@
 
-build/pam_secret.symbols: build/pam_secret.so
-	objcopy --only-keep-debug $? $@
+build/pam_secret: build/pam_secret-debug build/pam_secret.symbols
+	cp $< $@
+	strip --strip-debug --strip-unneeded $@
+	objcopy --add-gnu-debuglink=build/pam_secret.symbols $@
 
 build/main: build/main-debug build/main.symbols
 	cp $< $@

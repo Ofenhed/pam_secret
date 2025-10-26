@@ -2,21 +2,26 @@
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
 
-int get_sock_path_for_user(char *dest, int dest_len) {
-  int len =
-      snprintf(dest, dest_len, "/var/run/user/%u/encrypted-shadow", getuid());
-  if (len >= dest_len) {
-    errno = ENOMEM;
-    return -1;
+const char *get_socket_dir() {
+  static char runtime_dir_buf[32];
+  static const char *socket_dir = NULL;
+  if (socket_dir == NULL) {
+    if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
+      int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
+                         "/run/user/%u", getuid());
+      if (len < ARR_LEN(runtime_dir_buf))
+        socket_dir = runtime_dir_buf;
+    }
   }
-  return 0;
+  return socket_dir;
 }
 
-static const msg_info_t INVALID_MSG = {MSG_INVALID, 0};
+inline const char *get_socket_name() { return "encrypted-shadow"; }
 
 int msg_content_length(msg_info_t info) {
   switch (info.kind) {
@@ -24,6 +29,8 @@ int msg_content_length(msg_info_t info) {
   case MSG_CLEAR_SECRET:
   case MSG_NOT_AUTHENTICATED:
   case MSG_AUTHENTICATED:
+  case MSG_UPDATE_PASSWORD_SUCCESS:
+  case MSG_UNKNOWN_ERROR:
     return 0;
   case MSG_AUTHENTICATE:
   case MSG_HASH_FINALIZED:
@@ -32,7 +39,6 @@ int msg_content_length(msg_info_t info) {
     return 1;
   case MSG_PEER_EOF:
   case MSG_INVALID:
-    break;
     break;
   }
   errno = EINVAL;
@@ -44,7 +50,6 @@ int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]) {
   struct iovec iov[1];
 
   ssize_t nbytes;
-  int i, *p;
   char buf[CMSG_SPACE(sizeof(msg_context_t) * 3)] = {
       0x0d}; // TODO: WTF is this magic number?
   struct cmsghdr *cmsghdr = (struct cmsghdr *)buf;
@@ -67,7 +72,7 @@ int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]) {
       hdr->cmsg_level = SOL_SOCKET;
       hdr->cmsg_type = SCM_RIGHTS;
       if (!(hdr = CMSG_NXTHDR(&msg, hdr))) {
-          break;
+        break;
       }
     }
   }
@@ -75,16 +80,15 @@ int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]) {
   PROP_ERR(nbytes = recvmsg(sock, &msg, 0));
   msg_info_t msg_kind = msgs[0];
   if (nbytes == 0) {
-      return 0;
+    return 0;
   } else if (nbytes < sizeof(msg_info_t)) {
-      errno = EINVAL;
-      return -1;
+    errno = EINVAL;
+    return -1;
   } else if (msg_kind.kind == 0) {
-      errno = EINVAL;
-      return -1;
+    errno = EINVAL;
+    return -1;
   }
   auto hdr = CMSG_FIRSTHDR(&msg);
-  msg_context_t *hdr_fst = (msg_context_t *)CMSG_DATA(hdr);
   int context_len;
   PROP_ERR(context_len = msg_content_length(msg_kind));
   for (int i = 0; i < context_len; ++i) {
@@ -109,7 +113,6 @@ int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
   assert(context_len == msg_content_length(info));
 
   ssize_t nbytes;
-  int i, *p;
   char buf[CMSG_SPACE(sizeof(msg_context_t) * 3)] = {
       0x0d}; // TODO: WTF is this magic number?
   struct cmsghdr *cmsghdr = (struct cmsghdr *)buf;
@@ -122,28 +125,28 @@ int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
   msg.msg_iov = iov;
   msg.msg_iovlen = ARR_LEN(iov);
   if (context_len > 0) {
-  msg.msg_control = cmsghdr;
-  msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t) * context_len);
+    msg.msg_control = cmsghdr;
+    msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t) * context_len);
   } else {
-  msg.msg_control = NULL;
-  msg.msg_controllen = 0;
+    msg.msg_control = NULL;
+    msg.msg_controllen = 0;
   }
   msg.msg_flags = 0;
   {
     auto hdr = CMSG_FIRSTHDR(&msg);
     for (int i = 0; i < context_len; ++i) {
-        msg_context_t *m = (msg_context_t *)CMSG_DATA(hdr);
-        hdr->cmsg_len = CMSG_LEN(sizeof(msg_context_t));
-        hdr->cmsg_level = SOL_SOCKET;
-        hdr->cmsg_type = SCM_RIGHTS;
-        *m = context[i];
-        if (!(hdr = CMSG_NXTHDR(&msg, hdr))) {
-            break;
-        }
+      msg_context_t *m = (msg_context_t *)CMSG_DATA(hdr);
+      hdr->cmsg_len = CMSG_LEN(sizeof(msg_context_t));
+      hdr->cmsg_level = SOL_SOCKET;
+      hdr->cmsg_type = SCM_RIGHTS;
+      *m = context[i];
+      if (!(hdr = CMSG_NXTHDR(&msg, hdr))) {
+        break;
+      }
     }
   }
 
-  PROP_ERR(nbytes = sendmsg(sock, &msg, options));
+  PROP_ERR(nbytes = sendmsg(sock, &msg, options | MSG_NOSIGNAL));
   return nbytes;
 }
 

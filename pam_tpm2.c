@@ -1,6 +1,9 @@
 #include "daemon.h"
+#include "extern.h"
+#include "ipc.h"
 #include "utils.h"
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <openssl/hmac.h>
 #include <pwd.h>
@@ -10,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -35,143 +39,207 @@ EXPORTED PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 //   return exec_blocking(AS_USER_BIN, tpmArgs);
 // }
 
-/* expected hook, this is where custom stuff happens */
-EXPORTED PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
-                                            int argc, const char **argv) {
-  int retval;
-  int pcrRegister = -1;
-  int tmpRegister;
-
-  if (flags & PAM_SILENT) {
-    int out = open("/dev/null", O_WRONLY);
-    if (out == -1) {
-      return PAM_AUTH_ERR;
+static int logger = 2;
+static FILE *flogger() {
+  static FILE *flog = NULL;
+  static int have_log = -1;
+  if (have_log != logger) {
+    if (flog != NULL) {
+      fclose(flog);
     }
-    dup2(out, STDERR_FILENO);
-    dup2(out, STDOUT_FILENO);
-    close(out);
+    if ((flog = fdopen(logger, "w"))) {
+      have_log = logger;
+    }
   }
+  return flog;
+}
 
-  const char *pUsername;
-  retval = pam_get_user(pamh, &pUsername, NULL);
-  if (retval != PAM_SUCCESS) {
-    fprintf(stderr, "Could not get user\n");
-    return retval;
-  }
-  const size_t usernameLen = strlen(pUsername);
-  struct passwd *userPwd = getpwnam(pUsername);
-  if (userPwd == NULL) {
-    fprintf(stderr, "Could not read user info");
-    return PAM_AUTH_ERR;
-  }
-
-  int sock;
-  if ((sock = connect_daemon()) == -1) {
-    int child_pid;
-    if ((child_pid = fork()) == -1) {
-      fprintf(stderr, "Could not fork daemon");
-      return PAM_AUTH_ERR;
-    } else if (child_pid == 0) {
-      char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
-      if (execv(args[0], args) == -1) {
-        perror("Could not execute daemon");
-        return -1;
-      }
-    } else {
-      int wstatus;
-      if (!WIFEXITED(wstatus)) {
-        perror("Child process scrypt crashed");
-        return -1;
-      } else if (WEXITSTATUS(wstatus) != 0) {
-        fprintf(stderr, "Failed to start daemon");
-        return PAM_AUTH_ERR;
+static int daemon_socket(int open) {
+  static int sock = -1;
+  if (sock == -1 && open) {
+    auto flog = flogger();
+    uid_t target_user = getuid();
+    if ((sock = connect_daemon()) == -1) {
+      int child_pid;
+      fprintf(flog, "Forking");
+      if ((child_pid = fork()) == -1) {
+        fprintf(flog, "Could not fork daemon\n");
+        return PAM_SERVICE_ERR;
+      } else if (child_pid == 0) {
+        fprintf(flog, "Launching daemon\n");
+        setresuid(target_user, target_user, target_user);
+        char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
+        dup2(logger, 1);
+        dup2(logger, 2);
+        if (execv(args[0], args) == -1) {
+          fprintf(flog, "Could not execute daemon: %s\n", strerror(errno));
+          return -1;
+        }
       } else {
-        if ((sock = connect_daemon()) == -1) {
-          perror("Could not connect to daemon");
-          return PAM_AUTH_ERR;
+        int wstatus;
+        fprintf(flog, "Waiting for daemon\n");
+        waitpid(child_pid, &wstatus, 0);
+        if (!WIFEXITED(wstatus)) {
+          fprintf(flog, "Child process scrypt crashed: %s\n", strerror(errno));
+          return -1;
+        } else if (WEXITSTATUS(wstatus) != 0) {
+          fprintf(flog, "Failed to start daemon\n");
+          return PAM_SERVICE_ERR;
+        } else {
+          if ((sock = connect_daemon()) == -1) {
+            fprintf(flog, "Could not connect to daemon: %s\n", strerror(errno));
+            return PAM_SERVICE_ERR;
+          } else {
+            fprintf(flog, "Connected to daemon\n");
+          }
         }
       }
     }
-  }
-
-  const char *pAuthToken;
-  retval = pam_get_authtok(pamh, PAM_AUTHTOK, &pAuthToken, NULL);
-  if (retval != PAM_SUCCESS) {
-    fprintf(stderr, "Could not read auth token for user %s\n", pUsername);
+  } else if (sock != -1 && !open) {
+    int retval = close(sock);
+    sock = -1;
     return retval;
   }
-  const size_t authTokenLen = strlen(pAuthToken);
+  return sock;
+}
 
-  char hashBuffers[2][EVP_MAX_MD_SIZE];
-  size_t nextHash = 0;
-  unsigned int hashLen;
-
-  const unsigned char *pResultHash =
-      HMAC(EVP_sha256(), pAuthToken, authTokenLen, (unsigned char *)pUsername,
-           usernameLen, (unsigned char *)&hashBuffers[nextHash ^= 1], &hashLen);
-  assert(hashLen == 32);
-  if (pResultHash == NULL) {
-    fprintf(stderr, "HMAC failed\n");
-    return PAM_AUTH_ERR;
+static int read_auth_token(pam_handle_t *pamh, int auth_token, int secret_fd) {
+  int retval;
+  const char *p_auth_token;
+  auto flog = flogger();
+  retval = pam_get_authtok(pamh, auth_token, &p_auth_token, NULL);
+  if (retval != PAM_SUCCESS) {
+    fprintf(flog, "Could not read auth token for user\n");
+    return -1;
   }
-  for (int i = 0; i < argc; ++i) {
-    int separator = -1;
-    if (sscanf(argv[i], "hmac_msg=%n", &separator) == 0 && separator != -1) {
-      const char *msg = argv[i] + separator;
-      size_t msgLen = strlen(msg);
-      pResultHash =
-          HMAC(EVP_sha256(), pResultHash, hashLen, (const unsigned char *)msg,
-               msgLen, (unsigned char *)&hashBuffers[nextHash ^= 1], &hashLen);
-      assert(hashLen == 32);
+  const size_t auth_token_len = strlen(p_auth_token);
+
+  fprintf(flog, "Truncating shared memory location to %zu bytes\n",
+          auth_token_len);
+  if (ftruncate(secret_fd, auth_token_len) == -1) {
+    fprintf(flog, "Could not truncate memory\n");
+    return -1;
+  }
+  unsigned char *msg_mem;
+  if ((msg_mem = mmap(NULL, auth_token_len, PROT_WRITE, MAP_SHARED, secret_fd,
+                      0)) == MAP_FAILED) {
+    fprintf(flog, "Could not map memory\n");
+    return -1;
+  }
+
+  fprintf(flog, "Copying password of length %zu\n", auth_token_len);
+  memcpy(msg_mem, p_auth_token, auth_token_len);
+  munmap(msg_mem, auth_token_len);
+  return auth_token_len;
+}
+
+static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
+                           int argc, const char **argv) {
+  if (flags & PAM_SILENT) {
+    logger = open("/dev/null", O_WRONLY);
+    if (logger == -1) {
+      return PAM_SYSTEM_ERR;
     }
   }
-  assert(hashLen == 32);
-  if (pResultHash == NULL) {
-    fprintf(stderr, "HMAC failed\n");
-    return PAM_AUTH_ERR;
+  auto flog = flogger();
+
+  const char *pUsername;
+  int retval = pam_get_user(pamh, &pUsername, NULL);
+  if (retval != PAM_SUCCESS) {
+    fprintf(flog, "Could not get user\n");
+    return retval;
+  }
+  struct passwd *userPwd = getpwnam(pUsername);
+  if (userPwd == NULL) {
+    fprintf(flog, "Could not read user info\n");
+    return PAM_SYSTEM_ERR;
   }
 
-  // TODO: Check if systemd secret is accessible.
-  // Otherwise, check if session encrypted secret is decryptable. If so,
-  // encrypt it with systemd-creds against system secret and pcr. This file is
-  // intended to exist only when the screen is unlocked. If it's not
-  // decryptable, return error. If it doesn't exist, check if the persistent
-  // encrypted secret is decryptable by the user's credentials. If so, encrypt
-  // it to volatile storage against the user's credentials, with less harsh
-  // scrypt parameters than for the  persistant file. This file is intended to
-  // be available whenever the user is logged in. If none of those exist,
-  // generate a new random blob and encrypt it against the user's credentials
-  // using scrypt (TODO: Credentials must be valid, or we're locking the user
-  // out) with harsh parameters. This file is intended to always exist. The
-  // harsh parameters are meant to be decrypted probably once per computer
-  // bootup.
-  //
-  // All scrypt layers of encryption should probably be followed by a
-  // systemd-creds layer, which adds user separation as a layer protecting the
-  // file. Probably not a good idea to use TPM to protect the persistent file.
-  //
-  // When the user is logged out, send random data to the PCR and remove the
-  // session ecrypted secret file.
+  int sock = daemon_socket(1);
 
-  const unsigned char hashOutput[65];
-  for (int i = 0; i < 32; ++i) {
-    snprintf((char *)(&hashOutput[i << 1]), 3, "%02x", pResultHash[i]);
+  int auth_token_fd = memfd_secret(O_CLOEXEC);
+  if (auth_token_fd == -1) {
+    return PAM_BUF_ERR;
   }
-  char outputBuf[128];
-  snprintf((char *)&outputBuf, ARR_LEN(outputBuf), "%u", pcrRegister);
+  int auth_token_len = read_auth_token(pamh, auth_token, auth_token_fd);
+  if (auth_token_len == -1) {
+    fprintf(flog, "Could not read auth token\n");
+    return PAM_SYSTEM_ERR;
+  }
 
-  // if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrreset", (char *)&outputBuf)
-  // !=
-  //     0) {
-  //   fprintf(stderr, "tpm2_pcrreset failed\n");
-  //   return PAM_AUTH_ERR;
-  // }
-  snprintf((char *)&outputBuf, ARR_LEN(outputBuf), "%u:sha256=%s", pcrRegister,
-           hashOutput);
-  // if (tpm_function(sudoUser, "/usr/bin/tpm2_pcrextend", outputBuf) != 0) {
-  //   fprintf(stderr, "tpm2_pcrextend failed\n");
-  //   return PAM_AUTH_ERR;
-  // }
+  msg_info_t msg;
+  msg_context_t context[2] = {{auth_token_fd}};
+  msg.kind = MSG_AUTHENTICATE;
+  msg.data_len = auth_token_len;
+  if (send_peer_msg(sock, msg, context, 1, 0) == -1) {
+    return PAM_SERVICE_ERR;
+  }
 
-  return PAM_SUCCESS;
+  while (true) {
+    int len = recv_peer_msg(sock, &msg, context);
+    if (len == -1 || len == 0) {
+      return PAM_SERVICE_ERR;
+    }
+    fprintf(flog, "Got message %i\n", msg.kind);
+
+    if (msg.kind == MSG_AUTHENTICATED) {
+      fprintf(flog, "You're good\n");
+      return PAM_SUCCESS;
+    } else if (msg.kind == MSG_NOT_AUTHENTICATED) {
+      return PAM_AUTH_ERR;
+    }
+  }
+}
+
+EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
+                                         int argc, const char **argv) {
+  int sock = daemon_socket(1);
+  FILE *flog = flogger();
+  if (flags & PAM_PRELIM_CHECK) {
+    return do_authenticate(pamh, PAM_OLDAUTHTOK, flags, argc, argv);
+  } else if (flags & PAM_UPDATE_AUTHTOK) {
+    int secret_fd = memfd_secret(O_CLOEXEC);
+    if (secret_fd == -1) {
+      daemon_socket(0);
+      return PAM_BUF_ERR;
+    }
+    int secret_len;
+    if ((secret_len = read_auth_token(pamh, PAM_AUTHTOK, secret_fd)) == -1) {
+      daemon_socket(0);
+      return PAM_SYSTEM_ERR;
+    }
+    msg_info_t msg;
+    msg_context_t context[2] = {{secret_fd}};
+    msg.data_len = secret_len;
+    msg.kind = MSG_UPDATE_PASSWORD;
+    if (send_peer_msg(sock, msg, context, 1, 0) == -1) {
+      daemon_socket(0);
+      return PAM_SERVICE_ERR;
+    }
+    while (true) {
+      int len = recv_peer_msg(sock, &msg, context);
+      if (len == -1 || len == 0) {
+        daemon_socket(0);
+        return PAM_SERVICE_ERR;
+      }
+      fprintf(flog, "Got message %i\n", msg.kind);
+      if (msg.kind == MSG_UPDATE_PASSWORD_SUCCESS) {
+        daemon_socket(0);
+        return PAM_SUCCESS;
+      } else if (msg.kind == MSG_UNKNOWN_ERROR ||
+                 msg.kind == MSG_NOT_AUTHENTICATED) {
+        daemon_socket(0);
+        return PAM_SERVICE_ERR;
+      }
+    }
+  }
+  return PAM_IGNORE;
+}
+
+/* expected hook, this is where custom stuff happens */
+EXPORTED PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
+                                            int argc, const char **argv) {
+  int ret = do_authenticate(pamh, PAM_AUTHTOK, flags, argc, argv);
+  daemon_socket(0);
+  return ret;
 }

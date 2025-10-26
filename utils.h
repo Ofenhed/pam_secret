@@ -1,9 +1,9 @@
 #pragma once
 
 #include <fcntl.h>
-#include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #define ARR_LEN(x) (sizeof(x) / sizeof(x[0]))
 #define ARR_END(x) (x + ARR_LEN(x))
@@ -18,10 +18,30 @@
 #define LINESTR1(file, line) file ":" #line
 #define LINESTR(file, line) LINESTR1(file, line)
 #define LINE LINESTR(__FILE__, __LINE__)
-#define PROP_ERR_WITH(x, y) { if ((x) == -1) { { y } return -1; } }
-#define PROP_ERR(x) PROP_ERR_WITH(x, perror("Boom at " LINE "!");)
 
-#define EXPORTED __attribute__ ((visibility ("default") ))
+#define CRITICAL_ERR(x)                                                        \
+  {                                                                            \
+    perror(LINE " " x);                                                        \
+    exit(EXIT_FAILURE);                                                        \
+  }
+
+#define PROP_ERR_WITH(x, y)                                                    \
+  {                                                                            \
+    if ((x) == -1) {                                                           \
+      {                                                                        \
+        y                                                                      \
+      }                                                                        \
+      return -1;                                                               \
+    }                                                                          \
+  }
+#define PROP_ERR(x) PROP_ERR_WITH(x, perror("Boom at " LINE "!");)
+#define PROP_CRIT(x)                                                           \
+  {                                                                            \
+    if ((x) == -1)                                                             \
+      CRITICAL_ERR()                                                           \
+  }
+
+#define EXPORTED __attribute__((visibility("default")))
 
 #ifdef DEBUG
 #define DEBUG_PROP_ERR(x) PROP_ERR(x)
@@ -44,30 +64,19 @@
 static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
 
-int exec_blocking_io(const char *prog, char *const argv[], const char input[], int input_len, char *output, int output_len, int *bytes_read);
-
-static int exec_blocking_output(const char *prog, char *const argv[], char *output, int output_len, int *bytes_read) {
-    return exec_blocking_io(prog, argv, NULL, 0, output, output_len, NULL);
-}
-
-static int exec_blocking_cstring_output(const char *prog, char *const argv[], char *output, int output_len) {
-    return exec_blocking_output(prog, argv, output, output_len, NULL);
-}
-
-static int exec_blocking(const char *prog, char* const argv[]) {
-    return exec_blocking_output(prog, argv, NULL, 0, NULL);
-}
-
-const char *vbufnprintf(char **buf, const char *const buf_end, const char *format, va_list list);
-const char *bufnprintf(char **buf, const char *const buf_end, const char *format, ...);
-int add_arg(const char ***args, const char *const *const args_end, const char* arg);
+const char *vbufnprintf(char **buf, const char *const buf_end,
+                        const char *format, va_list list);
+const char *bufnprintf(char **buf, const char *const buf_end,
+                       const char *format, ...);
+int add_arg(const char ***args, const char *const *const args_end,
+            const char *arg);
 
 inline static int inherit_fd(int fd) {
-    //return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);
-    //return fd;
-    int new_fd = dup(fd);
-    dup2(fd, new_fd);
-    return new_fd;
+  // return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);
+  // return fd;
+  int new_fd = dup(fd);
+  dup2(fd, new_fd);
+  return new_fd;
 }
 
 inline static int inherit_fd_as(int fd, int fd2) {
@@ -78,9 +87,13 @@ inline static int inherit_fd_as(int fd, int fd2) {
     close(new_fd);
   }
   if (new_fd != fd) {
-      close(fd);
+    close(fd);
   }
   return new_fd;
 }
 
 int write_random_data(char *target, int secret_length);
+void *__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
+                  int flags, int fd, __off_t offset);
+#define crit_mmap(ADDR, LEN, PROT, FLAGS, FD, OFFSET)                          \
+  __crit_mmap(LINE, ADDR, LEN, PROT, FLAGS, FD, OFFSET)
