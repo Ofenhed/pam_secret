@@ -14,9 +14,15 @@ typedef struct {
     MSG_UPDATE_PASSWORD,
     MSG_UPDATE_PASSWORD_SUCCESS,
     MSG_UNKNOWN_ERROR,
+#ifdef DEBUG_QUERY_SECRETS
+    MSG_DUMP_SECRET,
+#endif
   } kind;
   union {
     int data_len;
+#ifdef DEBUG_QUERY_SECRETS
+    int secret_fd;
+#endif
   };
 } msg_info_t;
 

@@ -7,6 +7,8 @@
 
 #define ARR_LEN(x) (sizeof(x) / sizeof(x[0]))
 #define ARR_END(x) (x + ARR_LEN(x))
+#define STR_LEN(x) (ARR_LEN(x) - 1)
+#define STR_END(x) (x + STR_LEN(x))
 
 #if !(defined(SUDO_BIN) || defined(PKEXEC_BIN))
 #define PKEXEC_BIN "/usr/bin/sudo"
@@ -28,6 +30,7 @@
 #define PROP_ERR_WITH(x, y)                                                    \
   {                                                                            \
     if ((x) == -1) {                                                           \
+      perror("Boom at " LINE "!");                                             \
       {                                                                        \
         y                                                                      \
       }                                                                        \
@@ -68,8 +71,12 @@ const char *vbufnprintf(char **buf, const char *const buf_end,
                         const char *format, va_list list);
 const char *bufnprintf(char **buf, const char *const buf_end,
                        const char *format, ...);
+int read_secret_password(char *restrict password, int password_len,
+                         const char *format, ...);
+
 int add_arg(const char ***args, const char *const *const args_end,
             const char *arg);
+const char *get_runtime_dir();
 
 inline static int inherit_fd(int fd) {
   // return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);
@@ -97,3 +104,7 @@ void *__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
                   int flags, int fd, __off_t offset);
 #define crit_mmap(ADDR, LEN, PROT, FLAGS, FD, OFFSET)                          \
   __crit_mmap(LINE, ADDR, LEN, PROT, FLAGS, FD, OFFSET)
+
+void *__memfd_secret_alloc(int size);
+#define crit_memfd_secret_alloc(PTR) (PTR = __memfd_secret_alloc(sizeof(*PTR)))
+#define crit_munmap(PTR) PROP_CRIT(munmap(PTR, sizeof(*PTR)))

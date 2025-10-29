@@ -1,5 +1,6 @@
 #include "daemon.h"
 #include "extern.h"
+#include "hash.h"
 #include "ipc.h"
 #include "utils.h"
 #include <assert.h>
@@ -173,6 +174,15 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
     fprintf(flog, "Got message %i\n", msg.kind);
 
     if (msg.kind == MSG_AUTHENTICATED) {
+      sha256_hash_t *new_user_cred_raw;
+      sha256_hash_hex_t new_user_cred;
+      if ((new_user_cred_raw = mmap(NULL, sizeof(*new_user_cred_raw), PROT_READ,
+                                    MAP_SHARED, context[0].fd, 0)) !=
+          MAP_FAILED) {
+        new_user_cred = hash_to_hex(new_user_cred_raw);
+        munmap(new_user_cred_raw, sizeof(*new_user_cred_raw));
+        pam_set_item(pamh, auth_token, new_user_cred.printable);
+      }
       fprintf(flog, "You're good\n");
       return PAM_SUCCESS;
     } else if (msg.kind == MSG_NOT_AUTHENTICATED) {

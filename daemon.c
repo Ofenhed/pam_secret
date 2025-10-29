@@ -1,3 +1,4 @@
+#include "daemon.h"
 #include "creds.h"
 #include "extern.h"
 #include "hash.h"
@@ -19,7 +20,7 @@ int connect_daemon() {
   int sock;
   struct sockaddr_un address;
   if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s",
-               get_socket_dir(),
+               get_runtime_dir(),
                get_socket_name()) >= ARR_LEN(address.sun_path)) {
     CRITICAL_ERR("Socket path too long");
   }
@@ -88,7 +89,7 @@ typedef struct {
   int pid;
   write_buf_t *write_buf;
   union {
-    int hash_fd;
+    hash_state_t *hash_state;
   };
   // TODO: Writing, write buffer and events?
 } client_state_t;
@@ -161,7 +162,6 @@ int run_daemon(const char *name, int socket_not_listening) {
     const char *path = bufnprintf(&buf_ptr, buf_end, "%s/%s",
                                   get_persistent_storage_location(),
                                   get_persistent_secret_filename(getuid()));
-    fprintf(stderr, "Adding inotify to %s\n", path);
     PROP_CRIT(inotify_key_deleted = inotify_add_watch(
                   persistent_inotify, path,
                   IN_DELETE_SELF | IN_MOVE_SELF | IN_ONESHOT));
@@ -177,7 +177,7 @@ int run_daemon(const char *name, int socket_not_listening) {
 
   struct sockaddr_un address;
   address.sun_family = AF_UNIX;
-  const char *const socket_dir = get_socket_dir();
+  const char *const socket_dir = get_runtime_dir();
   const char *const socket_name = get_socket_name();
   if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s", socket_dir,
                socket_name) >= ARR_LEN(address.sun_path)) {
@@ -269,7 +269,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             epoll_ctl(epollfd, EPOLL_CTL_DEL, peer->fd, &events[n]);
             close(peer->fd);
             if (peer->client_state.client_kind == HASHER_CLIENT) {
-              close(peer->client_state.hash_fd);
+              crit_munmap(peer->client_state.hash_state);
             }
             close(peer->client_state.pid);
             free(peer);
@@ -319,18 +319,7 @@ int run_daemon(const char *name, int socket_not_listening) {
           continue;
         }
         if (info.kind == MSG_HASH_DATA) {
-          int secret_fd;
           fd = context[0].fd;
-          if ((secret_fd = get_session_secret_fd()) == -1) {
-            if ((b = new_write_buf(&peer->client_state.write_buf))) {
-              msg_info_t reply = {0};
-              HAS_OUTPUT();
-              reply.kind = MSG_NOT_AUTHENTICATED;
-              b->info = reply;
-            }
-            close(fd);
-            continue;
-          }
           if (info.data_len <= 0 || info.data_len > 1 << 30) {
             close(fd);
             fprintf(stderr, "Invalid file size received from peer: %i\n",
@@ -341,30 +330,49 @@ int run_daemon(const char *name, int socket_not_listening) {
             }
             continue;
           }
-          char *data = crit_mmap(NULL, info.data_len, PROT_READ,
-                                 MAP_SHARED | MAP_POPULATE, fd, 0);
+          unsigned char *data = crit_mmap(NULL, info.data_len, PROT_READ,
+                                          MAP_SHARED | MAP_POPULATE, fd, 0);
           close(fd);
           if (peer->client_state.client_kind == NEW_CLIENT) {
+            secret_state_t *session_secret;
+            if (!(session_secret = map_session_cred())) {
+              if ((b = new_write_buf(&peer->client_state.write_buf))) {
+                msg_info_t reply = {0};
+                HAS_OUTPUT();
+                reply.kind = MSG_NOT_AUTHENTICATED;
+                b->info = reply;
+              }
+              close(fd);
+              continue;
+            }
             peer->client_state.client_kind = HASHER_CLIENT;
-            PROP_CRIT(peer->client_state.hash_fd = memfd_secret(O_CLOEXEC));
+            crit_memfd_secret_alloc(peer->client_state.hash_state);
             secret_state_t *system_secret =
-                crit_mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED,
+                crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
                           get_system_secret_fd(), 0);
-            PROP_CRIT(hash_init_memfd(peer->client_state.hash_fd, secret_fd,
-                                      (unsigned char *)system_secret,
-                                      sizeof(secret_state_t)));
-            munmap(system_secret, sizeof(secret_state_t));
-            PROP_CRIT(hash_add(peer->client_state.hash_fd,
-                               (unsigned char *)data, info.data_len));
+            if (peer->client_state.client_has_authenticated) {
+              hmac(peer->client_state.hash_state,
+                   HASH_TYPE_AUTHENTICATED_HMAC_REQUEST,
+                   STR_LEN(HASH_TYPE_AUTHENTICATED_HMAC_REQUEST),
+                   (unsigned char *)session_secret, sizeof(*session_secret));
+            } else {
+              hmac(peer->client_state.hash_state, HASH_TYPE_HMAC_REQUEST,
+                   STR_LEN(HASH_TYPE_HMAC_REQUEST),
+                   (unsigned char *)session_secret, sizeof(*session_secret));
+            }
+            crit_munmap(session_secret);
+            hmac_msg(peer->client_state.hash_state,
+                     (unsigned char *)system_secret, sizeof(*system_secret));
+            crit_munmap(system_secret);
+            hmac_msg(peer->client_state.hash_state, data, info.data_len);
           } else if (peer->client_state.client_kind == HASHER_CLIENT) {
-            PROP_CRIT(hash_add(peer->client_state.hash_fd,
-                               (unsigned char *)data, info.data_len));
+            hmac_msg(peer->client_state.hash_state, data, info.data_len);
           }
           PROP_CRIT(munmap(data, info.data_len));
         } else if (info.kind == MSG_HASH_FINALIZE &&
                    peer->client_state.client_kind == HASHER_CLIENT) {
-          int secret_fd;
-          if ((secret_fd = get_session_secret_fd()) == -1) {
+          secret_state_t *session_secret;
+          if (!(session_secret = map_session_cred())) {
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               HAS_OUTPUT();
               msg_info_t reply = {0};
@@ -376,18 +384,18 @@ int run_daemon(const char *name, int socket_not_listening) {
             }
             continue;
           }
-          sha256_hash_t hash;
-          PROP_CRIT(
-              finalize_hash(peer->client_state.hash_fd, secret_fd, &hash));
-          close(peer->client_state.hash_fd);
+          hmac_msg(peer->client_state.hash_state,
+                   (unsigned char *)session_secret, sizeof(*session_secret));
+          crit_munmap(session_secret);
           int result_fd;
           PROP_CRIT(result_fd = memfd_secret(O_CLOEXEC));
-          PROP_CRIT(ftruncate(result_fd, sizeof(sha256_hash_hex_t)));
-          sha256_hash_hex_t *result =
-              crit_mmap(NULL, sizeof(sha256_hash_hex_t), PROT_WRITE, MAP_SHARED,
+          PROP_CRIT(ftruncate(result_fd, sizeof(sha256_hash_t)));
+          sha256_hash_t *result =
+              crit_mmap(NULL, sizeof(sha256_hash_t), PROT_WRITE, MAP_SHARED,
                         result_fd, 0);
-          *result = hash_to_hex(&hash);
-          munmap(result, sizeof(sha256_hash_hex_t));
+          hmac_finalize(peer->client_state.hash_state, result);
+          crit_munmap(peer->client_state.hash_state);
+          crit_munmap(result);
           if ((b = new_write_buf(&peer->client_state.write_buf))) {
             HAS_OUTPUT();
             msg_info_t reply;
@@ -413,18 +421,59 @@ int run_daemon(const char *name, int socket_not_listening) {
             continue;
           }
           close(context[0].fd);
-          msg_info_t reply;
+          msg_info_t reply = {0};
           if (authenticate_user(auth_mem, info.data_len) == 1) {
-            reply.kind = MSG_AUTHENTICATED;
+            secret_state_t *session;
+            if ((session = map_session_cred())) {
+              printf("Creating reply\n");
+              reply.kind = MSG_AUTHENTICATED;
+              hash_state_t *auth_token_generator;
+              crit_memfd_secret_alloc(auth_token_generator);
+              hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
+                   STR_LEN(HASH_TYPE_USER_PASSWORD), auth_mem, info.data_len);
+              hmac_msg(auth_token_generator, *session, sizeof(*session));
+              crit_munmap(session);
+              secret_state_t *system_secret =
+                  crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
+                            get_system_secret_fd(), 0);
+              hmac_msg(auth_token_generator, *system_secret,
+                       sizeof(*system_secret));
+              crit_munmap(system_secret);
+              int auth_token_fd;
+              PROP_CRIT(auth_token_fd = memfd_secret(O_CLOEXEC));
+              PROP_CRIT(ftruncate(auth_token_fd, sizeof(sha256_hash_t)));
+              sha256_hash_t *auth_token =
+                  crit_mmap(NULL, sizeof(*auth_token), PROT_WRITE, MAP_SHARED,
+                            auth_token_fd, 0);
+              hmac_finalize(auth_token_generator, auth_token);
+              crit_munmap(auth_token_generator);
+              crit_munmap(auth_token);
+              if ((b = new_write_buf(&peer->client_state.write_buf))) {
+                HAS_OUTPUT();
+                b->info = reply;
+                b->context[0] =
+                    (msg_context_t){{b->fds_to_close[0] = auth_token_fd}};
+                b->context_len = b->num_fds_to_close = 1;
+              }
+            }
             peer->client_state.client_has_authenticated |= 1;
           } else {
             reply.kind = MSG_NOT_AUTHENTICATED;
+            if ((b = new_write_buf(&peer->client_state.write_buf))) {
+              HAS_OUTPUT();
+              b->info = reply;
+            }
           }
           munmap(auth_mem, info.data_len);
-          if ((b = new_write_buf(&peer->client_state.write_buf))) {
-            HAS_OUTPUT();
-            b->info = reply;
+#ifdef DEBUG_QUERY_SECRETS
+        } else if (info.kind == MSG_DUMP_SECRET) {
+          char *mapped;
+          if ((mapped = mmap(NULL, 512, PROT_READ, MAP_SHARED, info.secret_fd,
+                             0)) != MAP_FAILED) {
+            printf("Secret %u:\n%512s\n", info.secret_fd, mapped);
+            munmap(mapped, 512);
           }
+#endif
         } else if (info.kind == MSG_UPDATE_PASSWORD) {
           int secret_fd;
           if (!peer->client_state.client_has_authenticated ||
@@ -438,12 +487,13 @@ int run_daemon(const char *name, int socket_not_listening) {
             close(context[0].fd);
             continue;
           }
-          char *pw_mem = crit_mmap(NULL, info.data_len, PROT_READ, MAP_SHARED,
-                                   context[0].fd, 0);
+          unsigned char *pw_mem = crit_mmap(NULL, info.data_len, PROT_READ,
+                                            MAP_SHARED, context[0].fd, 0);
           close(context[0].fd);
           int output_fd = memfd_create("new_persistent", 0);
           PROP_CRIT(create_user_persistent_cred_secret(
               secret_fd, pw_mem, info.data_len, output_fd));
+          crit_munmap(pw_mem);
           int child_pid;
           PROP_CRIT(child_pid = fork());
           if (child_pid == 0) {
@@ -451,8 +501,8 @@ int run_daemon(const char *name, int socket_not_listening) {
             PROP_CRIT(auth_fd = inherit_fd(get_system_secret_fd()));
             PROP_CRIT(output_fd = inherit_fd(output_fd));
             const char *update_arg =
-                bufnprintf(&buf_ptr, buf_end, "replace_key=%i,auth_token=%i",
-                           output_fd, auth_fd);
+                bufnprintf(&buf_ptr, buf_end, REPLACE_KEY_CMD_FORMAT, output_fd,
+                           auth_fd, NULL);
             fprintf(stderr, "Running update with %s\n", update_arg);
             char *args[] = {"/usr/sbin/pam_secret", (char *)update_arg, NULL};
             if (execv(args[0], args) == -1) {

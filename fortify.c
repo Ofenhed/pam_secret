@@ -1,5 +1,6 @@
 #include "creds.h"
 #include "utils.h"
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/nsfs.h>
@@ -11,7 +12,7 @@
 
 static const cap_value_t cap_list[] = {CAP_DAC_OVERRIDE};
 
-int _gain_root_privileges(cap_t caps) {
+static int _gain_root_privileges(cap_t caps) {
   if (!CAP_IS_SUPPORTED(CAP_DAC_OVERRIDE)) {
     fprintf(stderr, "I can never become king!\n");
     exit(EXIT_FAILURE);
@@ -35,7 +36,7 @@ int _gain_root_privileges(cap_t caps) {
   return 0;
 }
 
-int _drop_root_privileges(cap_t caps, int permamently) {
+static int _drop_root_privileges(cap_t caps, int permamently) {
   PROP_ERR(cap_set_flag(caps, CAP_EFFECTIVE, ARR_LEN(cap_list), cap_list,
                         CAP_CLEAR));
   if (permamently) {
@@ -64,7 +65,22 @@ int drop_root_privileges(int permanently) {
   return 0;
 }
 
+static void protect_stdin() {
+  static char *stdin_buffer[BUFSIZ];
+  crit_memfd_secret_alloc(*stdin_buffer);
+  setbuf(stdin, *stdin_buffer);
+}
+
 int init_privileged() {
+  static bool initialized = false;
+  assert(!initialized);
+  initialized = true;
+  protect_stdin();
+  int persistent_storage;
+  if ((persistent_storage = get_persistent_storage_fd()) == -1) {
+    fputs("You are not authorized to use this service\n", stderr);
+    exit(-1);
+  }
   auto caps = cap_get_proc();
   PROP_CRIT(_gain_root_privileges(caps));
   if (get_system_secret_fd() == -1) {
@@ -72,9 +88,9 @@ int init_privileged() {
     exit(EXIT_FAILURE);
   }
   int my_cred;
-  if ((my_cred = openat(get_persistent_storage_fd(),
-                        get_persistent_secret_filename(getuid()), O_RDONLY,
-                        0)) == -1) {
+  if ((my_cred =
+           openat(persistent_storage, get_persistent_secret_filename(getuid()),
+                  O_RDONLY, 0)) == -1) {
     perror("No user credential installed");
   }
   struct stat stats;

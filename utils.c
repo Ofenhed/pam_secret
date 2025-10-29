@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 inline const char *vbufnprintf(char **buf, const char *const buf_end,
@@ -37,6 +38,49 @@ const char *bufnprintf(char **buf, const char *const buf_end,
   return ret;
 }
 
+int read_secret_password(char *restrict password, int password_len,
+                         const char *format, ...) {
+  struct termios saved_flags, tmp_flags;
+  va_list format_args;
+  int tty_detected = isatty(fileno(stdin));
+  ;
+
+  va_start(format_args, format);
+  if (tty_detected) {
+    tcgetattr(fileno(stdout), &saved_flags);
+    tmp_flags = saved_flags;
+    tmp_flags.c_lflag &= ~ECHO;
+    tmp_flags.c_lflag |= ECHONL;
+
+    PROP_ERR(tcsetattr(fileno(stdout), TCSANOW, &tmp_flags));
+
+    vfprintf(stdout, format, format_args);
+    fflush(stdout);
+  }
+  char *password_ptr = password;
+  const char *const password_end = password_ptr + password_len;
+  int read_error;
+  while (password_ptr < password_end && !feof(stdin) &&
+         (*password_ptr = fgetc(stdin)) && *password_ptr != '\n') {
+    if (*password_ptr == -1) {
+      read_error = errno;
+      break;
+    }
+    ++password_ptr;
+  }
+  if (password_ptr == password_end) {
+    return -1;
+  }
+  if (tty_detected) {
+    PROP_ERR(tcsetattr(fileno(stdout), TCSANOW, &saved_flags));
+  }
+  if (*password_ptr == -1) {
+    errno = read_error;
+    return -1;
+  }
+  return password_ptr - password;
+}
+
 int add_arg(const char ***args, const char *const *const args_end,
             const char *arg) {
   const char **current_arg = (*args)++;
@@ -48,6 +92,20 @@ int add_arg(const char ***args, const char *const *const args_end,
   *current_arg = arg;
   **args = 0;
   return 0;
+}
+
+const char *get_runtime_dir() {
+  static char runtime_dir_buf[32];
+  static const char *socket_dir = NULL;
+  if (socket_dir == NULL) {
+    if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
+      int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
+                         "/run/user/%u", getuid());
+      if (len < ARR_LEN(runtime_dir_buf))
+        socket_dir = runtime_dir_buf;
+    }
+  }
+  return socket_dir;
 }
 
 int write_random_data(char *target, int secret_length) {
@@ -82,4 +140,14 @@ inline void *__crit_mmap(const char *call_source, void *addr, size_t len,
     exit(EXIT_FAILURE);
   }
   return result;
+}
+
+void *__memfd_secret_alloc(int size) {
+  int secret;
+  PROP_CRIT(secret = memfd_secret(O_CLOEXEC));
+  PROP_CRIT(ftruncate(secret, size));
+  void *ptr =
+      crit_mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, secret, 0);
+  PROP_CRIT(close(secret));
+  return ptr;
 }

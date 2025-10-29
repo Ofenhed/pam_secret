@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hash.h"
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -64,6 +65,7 @@ typedef struct {
   };
 } scrypt_action_t;
 
+secret_state_t *map_session_cred();
 int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
                    int user_password_len, int out_secret_fd);
 scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
@@ -82,12 +84,16 @@ scrypt_action_t default_trivial_args();
 scrypt_action_t default_persistent_args();
 scrypt_action_t default_session_args();
 
-int handle_persistent_cred_secret(scrypt_operation_t op,
-                                  const unsigned char *input_cred,
-                                  int input_cred_len, int output_file);
+// int handle_persistent_cred_secret(scrypt_operation_t op,
+//                                   const unsigned char *input_cred,
+//                                   int input_cred_len, int output_file);
 int install_user_session_cred_secret(int source_fd);
-int create_user_persistent_cred_secret(int secret_fd, const char *user_password,
+int create_user_persistent_cred_secret(int secret_fd,
+                                       const unsigned char *user_password,
                                        int user_password_len,
                                        int persistent_fd);
 
-int init_and_get_session_mask_fd();
+const secret_state_t *init_and_get_session_mask();
+
+void hashed_user_cred(const unsigned char *user_password, int user_password_len,
+                      sha256_hash_t *output);

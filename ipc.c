@@ -7,20 +7,6 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 
-const char *get_socket_dir() {
-  static char runtime_dir_buf[32];
-  static const char *socket_dir = NULL;
-  if (socket_dir == NULL) {
-    if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
-      int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
-                         "/run/user/%u", getuid());
-      if (len < ARR_LEN(runtime_dir_buf))
-        socket_dir = runtime_dir_buf;
-    }
-  }
-  return socket_dir;
-}
-
 inline const char *get_socket_name() { return "encrypted-shadow"; }
 
 int msg_content_length(msg_info_t info) {
@@ -28,11 +14,14 @@ int msg_content_length(msg_info_t info) {
   case MSG_HASH_FINALIZE:
   case MSG_CLEAR_SECRET:
   case MSG_NOT_AUTHENTICATED:
-  case MSG_AUTHENTICATED:
   case MSG_UPDATE_PASSWORD_SUCCESS:
   case MSG_UNKNOWN_ERROR:
+#ifdef DEBUG_QUERY_SECRETS
+  case MSG_DUMP_SECRET:
+#endif
     return 0;
   case MSG_AUTHENTICATE:
+  case MSG_AUTHENTICATED:
   case MSG_HASH_FINALIZED:
   case MSG_HASH_DATA:
   case MSG_UPDATE_PASSWORD:
