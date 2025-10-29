@@ -1,0 +1,3 @@
+#!/bin/sh
+
+pam_secret lock
