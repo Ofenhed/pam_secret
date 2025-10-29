@@ -67,12 +67,12 @@
 static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
 
-const char *vbufnprintf(char **buf, const char *const buf_end,
-                        const char *format, va_list list);
+const char *vbufnprintf(char **restrict buf, const char *restrict const buf_end,
+                        const char *restrict format, va_list list);
 const char *bufnprintf(char **buf, const char *const buf_end,
                        const char *format, ...);
 int read_secret_password(char *restrict password, int password_len,
-                         const char *format, ...);
+                         const char *restrict format, ...);
 
 int add_arg(const char ***args, const char *const *const args_end,
             const char *arg);

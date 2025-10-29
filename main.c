@@ -5,6 +5,7 @@
 #include "hash.h"
 #include "install.h"
 #include "ipc.h"
+#include "log.h"
 #include "utils.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -19,22 +20,22 @@
 #define MAX_PASSWORD_LENGTH 64
 
 int install_new_user_key(int parent_auth_fd, int new_content) {
-  fprintf(stderr, "Trying to install new user, gaining privileges\n");
+  log_debug("Trying to install new user, gaining privileges");
   PROP_ERR(gain_root_privileges());
   int system_secret_fd;
   struct stat system_secret_stat, auth_token_stat;
   PROP_ERR(fstat(parent_auth_fd, &auth_token_stat));
   PROP_ERR(system_secret_fd = get_system_secret_fd());
   PROP_ERR(fstat(system_secret_fd, &system_secret_stat));
-  fprintf(stderr, "Checking auth fd\n");
+  log_debug("Checking auth fd");
   if (system_secret_stat.st_dev != auth_token_stat.st_dev ||
       system_secret_stat.st_ino != auth_token_stat.st_ino) {
     errno = EACCES;
     return -1;
   }
-  fprintf(stderr, "Installing new credential\n");
+  log_debug("Installing new credential");
   PROP_ERR(install_user_session_cred_secret(new_content));
-  fprintf(stderr, "Finalizing\n");
+  log_debug("Finalizing");
   PROP_ERR(drop_root_privileges(0));
   return 0;
 }
@@ -99,7 +100,6 @@ EXPORTED int exported_main(int argc, char **argv) {
         return 0;
       }
       int result;
-      printf("New password is %s\n", *password);
       if ((result = create_user_persistent_cred_secret(
                -1, (unsigned char *)*password, password_len, secret_fd)) ==
           -1) {

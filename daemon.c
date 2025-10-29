@@ -3,6 +3,7 @@
 #include "extern.h"
 #include "hash.h"
 #include "ipc.h"
+#include "log.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -210,7 +211,7 @@ int run_daemon(const char *name, int socket_not_listening) {
       peer_state_t *peer = peer_state(&events[n]);
       write_buf_t *b;
       RESET_BUF_PTR();
-      fprintf(stderr, "Event from fd %i\n", peer->fd);
+      log_debug("Event from fd %i\n", peer->fd);
 #define HAS_OUTPUT()                                                           \
   {                                                                            \
     events[n].events |= EPOLLOUT;                                              \
@@ -219,16 +220,15 @@ int run_daemon(const char *name, int socket_not_listening) {
       if (peer->peer_kind == SERVER) {
         int client;
         PROP_CRIT(client = accept4(peer->fd, NULL, NULL, SOCK_CLOEXEC));
-        fprintf(stderr, "New client %u\n", client);
+        log_debug("New client %u\n", client);
         ev.events = EPOLLIN;
         if (!(state_tmp = malloc_client_state(&ev, client))) {
-          fprintf(stderr, "Failed to allocate client state\n");
+          log_error("Failed to allocate client state\n");
           close(client);
           continue;
         } else if ((state_tmp->client_state.cred.uid & ~server_user) ||
                    epoll_ctl(epollfd, EPOLL_CTL_ADD, client, &ev) == -1) {
-          fprintf(stderr, "Invalid user? %i\n",
-                  state_tmp->client_state.cred.uid);
+          log_error("Invalid user? %i\n", state_tmp->client_state.cred.uid);
           free(state_tmp);
           close(client);
           continue;
@@ -238,7 +238,7 @@ int run_daemon(const char *name, int socket_not_listening) {
         int c;
         PROP_CRIT(c = read(persistent_inotify, &iev_buf, ARR_LEN(iev_buf)));
         if (c == 0) {
-          fprintf(stderr, "Inotify closed, what does that mean?\n");
+          log_error("Inotify closed, what does that mean?\n");
           return -1;
         }
         struct inotify_event *iev_ptr = (struct inotify_event *)iev_buf;
@@ -246,16 +246,15 @@ int run_daemon(const char *name, int socket_not_listening) {
             (struct inotify_event *)(iev_buf + c);
         while (iev_ptr < iev_end) {
           if (iev_ptr->wd == inotify_key_deleted) {
-            fprintf(stderr,
-                    "User key deleted!\nThat's someone else's problem now.\n");
+            log_warning(
+                "User key deleted!\nThat's someone else's problem now.\n");
             close(server);
             char *args[] = {(char *)name, "daemon", NULL};
             execv("/proc/self/exe", args);
             exit(0);
           } else if (iev_ptr->wd == inotify_run_dir_modified &&
                      strcmp(iev_ptr->name, socket_name) == 0) {
-            fprintf(stderr,
-                    "They killed my socket file.\nWait for me, buddy...\n");
+            log_error("They killed my socket file.\nWait for me, buddy...\n");
             close(server);
             exit(0);
           }
@@ -311,7 +310,7 @@ int run_daemon(const char *name, int socket_not_listening) {
         int len;
         len = recv_peer_msg(peer->fd, &info, context);
         if (len == 0 || len == -1) {
-          fprintf(stderr, "Connection failed or closed\n");
+          log_debug("Connection failed or closed\n");
           if ((b = new_write_buf(&peer->client_state.write_buf))) {
             HAS_OUTPUT();
             b->buf_kind = WRITE_BUF_CLOSE;
@@ -322,8 +321,8 @@ int run_daemon(const char *name, int socket_not_listening) {
           fd = context[0].fd;
           if (info.data_len <= 0 || info.data_len > 1 << 30) {
             close(fd);
-            fprintf(stderr, "Invalid file size received from peer: %i\n",
-                    info.data_len);
+            log_debug("Invalid file size received from peer: %i\n",
+                      info.data_len);
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               HAS_OUTPUT();
               b->buf_kind = WRITE_BUF_CLOSE;
@@ -408,12 +407,11 @@ int run_daemon(const char *name, int socket_not_listening) {
           }
         } else if (info.kind == MSG_AUTHENTICATE &&
                    peer->client_state.client_kind == NEW_CLIENT) {
-          fprintf(stderr, "Received authentication attempt from %i\n",
-                  peer->fd);
+          log_debug("Received authentication attempt from %i\n", peer->fd);
           unsigned char *auth_mem;
           if ((auth_mem = mmap(NULL, info.data_len, PROT_READ, MAP_SHARED,
                                context[0].fd, 0)) == MAP_FAILED) {
-            fprintf(stderr, "Got invalid file descriptor from peer\n");
+            log_debug("Got invalid file descriptor from peer\n");
             close(context[0].fd);
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               b->buf_kind = WRITE_BUF_CLOSE;
@@ -425,7 +423,7 @@ int run_daemon(const char *name, int socket_not_listening) {
           if (authenticate_user(auth_mem, info.data_len) == 1) {
             secret_state_t *session;
             if ((session = map_session_cred())) {
-              printf("Creating reply\n");
+              log_debug("Creating reply\n");
               reply.kind = MSG_AUTHENTICATED;
               hash_state_t *auth_token_generator;
               crit_memfd_secret_alloc(auth_token_generator);
@@ -503,7 +501,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             const char *update_arg =
                 bufnprintf(&buf_ptr, buf_end, REPLACE_KEY_CMD_FORMAT, output_fd,
                            auth_fd, NULL);
-            fprintf(stderr, "Running update with %s\n", update_arg);
+            log_debug("Running update with %s\n", update_arg);
             char *args[] = {"/usr/sbin/pam_secret", (char *)update_arg, NULL};
             if (execv(args[0], args) == -1) {
               perror("Child process execve failed");

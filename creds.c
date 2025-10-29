@@ -1,6 +1,7 @@
 #include "creds.h"
 #include "extern.h"
 #include "hash.h"
+#include "log.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -251,7 +252,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
     // PROP_ERR(add_arg(&curr_arg, end_args, "-c"));
     // PROP_ERR(add_arg(&curr_arg, end_args, "ls -lah /proc/$$/fd/; scrypt
     // \"${@}\""));
-    printf("%scrypting data\n", params.op == ENCRYPT ? "En" : "De");
+    log_debug("%scrypting data\n", params.op == ENCRYPT ? "En" : "De");
     PROP_ERR(add_arg(&curr_arg, end_args, "/usr/bin/scrypt"));
     PROP_ERR(to_scrypt_args(&params, &curr_arg, end_args));
     PROP_ERR(add_arg(&curr_arg, end_args, "--passphrase"));
@@ -341,7 +342,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
           }
           PROP_ERR_H(c = write(events[n].data.fd, *source, *source_len));
           if (c == 0) {
-            fprintf(stderr, "Could not write complete buffer");
+            log_debug("Could not write complete buffer");
             return -1;
           }
           (*source) += c;

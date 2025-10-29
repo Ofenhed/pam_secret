@@ -12,7 +12,7 @@ build:
 build/%.o: %.c build
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
-build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o
+build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o build/log.o
 	# $(CC) $(CFLAGS) -fPIC -fPIE -pie -shared -Wl,-soname,$@ -Wl,-e,lib_entry $^ -lssl -lcrypto -lcap -lpam -o $@
 	$(CC) $(CFLAGS) -fPIC -shared $^ -lssl -lcrypto -lcap -lpam -o $@
 

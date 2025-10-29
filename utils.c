@@ -1,5 +1,6 @@
 #include "utils.h"
 #include "extern.h"
+#include "log.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -29,7 +30,7 @@ inline const char *vbufnprintf(char **buf, const char *const buf_end,
   return result;
 }
 
-const char *bufnprintf(char **buf, const char *const buf_end,
+const char *bufnprintf(char **restrict buf, const char *restrict const buf_end,
                        const char *format, ...) {
   va_list list;
   va_start(list, format);
@@ -43,7 +44,6 @@ int read_secret_password(char *restrict password, int password_len,
   struct termios saved_flags, tmp_flags;
   va_list format_args;
   int tty_detected = isatty(fileno(stdin));
-  ;
 
   va_start(format_args, format);
   if (tty_detected) {
@@ -57,6 +57,7 @@ int read_secret_password(char *restrict password, int password_len,
     vfprintf(stdout, format, format_args);
     fflush(stdout);
   }
+  va_end(format_args);
   char *password_ptr = password;
   const char *const password_end = password_ptr + password_len;
   int read_error;
@@ -109,7 +110,7 @@ const char *get_runtime_dir() {
 }
 
 int write_random_data(char *target, int secret_length) {
-  printf("Writing %i bytes to %p\n", secret_length, target);
+  log_debug("Writing %i bytes to %p\n", secret_length, target);
   int random = open("/dev/random", O_CLOEXEC | O_RDONLY);
   PROP_ERR(random);
 
