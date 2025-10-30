@@ -95,16 +95,16 @@ int add_arg(const char ***args, const char *const *const args_end,
   return 0;
 }
 
-const char *get_runtime_dir() {
+const char *get_runtime_dir(uid_t(get_target_user)(void)) {
   static char runtime_dir_buf[32];
   static const char *socket_dir = NULL;
   if (socket_dir == NULL) {
-    if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
-      int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
-                         "/run/user/%u", getuid());
-      if (len < ARR_LEN(runtime_dir_buf))
-        socket_dir = runtime_dir_buf;
-    }
+    // if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
+    int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
+                       "/run/user/%u", get_target_user());
+    if (len < ARR_LEN(runtime_dir_buf))
+      socket_dir = runtime_dir_buf;
+    //}
   }
   return socket_dir;
 }
@@ -128,16 +128,20 @@ int write_random_data(char *target, int secret_length) {
 void debug_output() {
 #ifndef DEBUG
   int null = open("/dev/null", O_RDWR, 0);
-  dup2(null, 1);
-  dup2(null, 2);
+  dup2(null, stdout_fd);
+  dup2(null, stderr_fd);
 #endif
 }
 
 inline void *__crit_mmap(const char *call_source, void *addr, size_t len,
                          int prot, int flags, int fd, __off_t offset) {
+  if (len == 0) {
+    log_error("Tried to allocate zero bytes at %s", call_source);
+    return NULL;
+  }
   void *result = mmap(addr, len, prot, flags, fd, offset);
   if (result == MAP_FAILED) {
-    fprintf(stderr, "Critical mmap failed at %s\n", call_source);
+    log_error("Critical mmap failed at %s\n", call_source);
     exit(EXIT_FAILURE);
   }
   return result;

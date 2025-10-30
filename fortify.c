@@ -84,19 +84,20 @@ int init_privileged() {
   auto caps = cap_get_proc();
   PROP_CRIT(_gain_root_privileges(caps));
   if (get_system_secret_fd() == -1) {
-    perror("Could not initialize process privileges");
+    log_error("Could not initialize process privileges");
     exit(EXIT_FAILURE);
   }
+  uid_t user = geteuid();
   int my_cred;
-  if ((my_cred =
-           openat(persistent_storage, get_persistent_secret_filename(getuid()),
-                  O_RDONLY, 0)) == -1) {
-    perror("No user credential installed");
+  if ((my_cred = openat(persistent_storage,
+                        get_persistent_secret_filename(user), O_RDONLY, 0)) ==
+      -1) {
+    log_warning("No user credential installed");
   }
   struct stat stats;
   fstat(my_cred, &stats);
-  if (stats.st_uid != getuid()) {
-    fprintf(stderr, "I don't own my secret\n");
+  if (stats.st_uid != user) {
+    log_error("I don't own my secret\n");
   }
   close(my_cred);
   PROP_CRIT(_drop_root_privileges(caps, 1));

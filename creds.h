@@ -9,7 +9,7 @@ const char *manager_group_name();
 const char *get_persistent_storage_location();
 const char *get_system_secret_filename();
 int get_persistent_storage_fd();
-int get_persistent_secret_fd();
+int get_persistent_secret_fd(uid_t user);
 int get_session_secret_fd();
 int get_system_secret_fd();
 const char *get_persistent_secret_filename(uid_t user);
@@ -21,6 +21,7 @@ const char *get_persistent_secret_filename(uid_t user);
 #define SECRET_LEN 256
 #endif
 #endif
+#define MAX_PASSWORD_LENGTH 64
 
 typedef unsigned char secret_state_t[SECRET_LEN];
 
@@ -84,10 +85,8 @@ scrypt_action_t default_trivial_args();
 scrypt_action_t default_persistent_args();
 scrypt_action_t default_session_args();
 
-// int handle_persistent_cred_secret(scrypt_operation_t op,
-//                                   const unsigned char *input_cred,
-//                                   int input_cred_len, int output_file);
-int install_user_session_cred_secret(int source_fd);
+int install_user_session_cred_secret(int source_fd, uid_t user,
+                                     int allow_create);
 int create_user_persistent_cred_secret(int secret_fd,
                                        const unsigned char *user_password,
                                        int user_password_len,
@@ -97,3 +96,6 @@ const secret_state_t *init_and_get_session_mask();
 
 void hashed_user_cred(const unsigned char *user_password, int user_password_len,
                       sha256_hash_t *output);
+int pam_translated_user_auth_token(const unsigned char *user_password,
+                                   int user_password_len,
+                                   sha256_hash_t *output);

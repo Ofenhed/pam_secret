@@ -1,5 +1,5 @@
 #CFLAGS += -std=c23 -fvisibility=hidden -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
-CFLAGS += -std=c23 -Wall -g -DDEBUG -D_GNU_SOURCE -DSERVICE_GROUP=qubes
+CFLAGS += -std=c23 -Wall -g -D_GNU_SOURCE -DSERVICE_GROUP=qubes
 
 all: build/pam_secret.so build/pam_secret
 
@@ -34,9 +34,12 @@ install-main: build/pam_secret
 	install --mode=755 --owner=root --group=root --target-directory=/usr/sbin/ $<
 	setcap cap_dac_override+p /usr/sbin/pam_secret
 
-install: install-pam install-main
+install-qubes-rpc:
+	cp qubes-rpc/auth.* /etc/qubes-rpc/
+
+install: install-pam install-main install-qubes-rpc
 
 clean:
 	rm -rf ./build/ || rm -f ./build/*
 
-.PHONY: clean install all install-deps install install-pam install-main
+.PHONY: clean install all install-deps install install-pam install-main install-qubes-rpc

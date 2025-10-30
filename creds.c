@@ -82,6 +82,10 @@ scrypt_action_t set_scrypt_input_fd(scrypt_action_t params, int fd) {
 }
 
 int set_memfd_random(int fd, int len) {
+  if (len <= 0) {
+    errno = EINVAL;
+    return -1;
+  }
   char *target = mmap(NULL, len, PROT_WRITE, MAP_SHARED, fd, 0);
   if (target == MAP_FAILED) {
     perror("Could not map memory");
@@ -173,18 +177,18 @@ int get_persistent_storage_fd() {
   return storage;
 }
 
-int get_persistent_secret_fd() {
+int get_persistent_secret_fd(uid_t user) {
   static int secret_fd = -1;
   static int fd_user = -1;
-  if (secret_fd == -1 || fd_user != getuid()) {
+  if (secret_fd == -1 || fd_user != user) {
     if (secret_fd != -1) {
       close(secret_fd);
     }
     int storage;
     PROP_ERR(storage = get_persistent_storage_fd());
-    fd_user = getuid();
+    fd_user = user;
     secret_fd =
-        openat(storage, get_persistent_secret_filename(fd_user), O_RDONLY, 0);
+        openat(storage, get_persistent_secret_filename(user), O_RDONLY, 0);
   }
   return secret_fd;
 }
@@ -407,9 +411,9 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
   return -1;
 }
 
-int install_user_session_cred_secret(int source_fd) {
+int install_user_session_cred_secret(int source_fd, uid_t user,
+                                     int allow_create) {
   int output_fd, wd;
-  const uid_t uid = getuid();
   PROP_ERR(wd = get_persistent_storage_fd());
   PROP_ERR(output_fd = openat(wd, ".", O_TMPFILE | O_WRONLY, 0400));
   int r, w;
@@ -435,15 +439,22 @@ int install_user_session_cred_secret(int source_fd) {
 
   const char *tmpfile = bufnprintf(
       &printf_ptr, printf_end, "%s%n%s", PERSISTENT_CREDENTIAL_REQUEST_PREFIX,
-      &target_file_offset, get_persistent_secret_filename(uid));
+      &target_file_offset, get_persistent_secret_filename(user));
   const char *newfile = tmpfile + target_file_offset;
   const char *memfile_path =
       bufnprintf(&printf_ptr, printf_end, "/proc/self/fd/%i", output_fd);
   assert(tmpfile != NULL && memfile_path != NULL);
   PROP_ERR_L(linkat(AT_FDCWD, memfile_path, wd, tmpfile, AT_SYMLINK_FOLLOW));
 #undef PROP_ERR_L
+  fchown(output_fd, user, manager_group());
   close(output_fd);
+  if (!allow_create) {
+    if (faccessat(wd, newfile, R_OK, 0) != 0) {
+      return -1;
+    }
+  }
   PROP_ERR(renameat(wd, tmpfile, wd, newfile));
+  fchownat(wd, newfile, user, manager_group(), 0);
   return 0;
 }
 
@@ -463,44 +474,28 @@ void hashed_user_cred(const unsigned char *user_password, int user_password_len,
   crit_munmap(hash_state);
 }
 
-// void hashed_user_identifier(uid_t user, sha256_hash_t *output) {
-//   secret_state_t *system_secret =
-//       crit_mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED,
-//                 get_system_secret_fd(), 0);
-//   hash_state_t *hash_state;
-//   crit_memfd_secret_alloc(hash_state);
-//   hmac(hash_state, (unsigned char *)&user, sizeof(user), *system_secret,
-//        sizeof(*system_secret));
-//   crit_munmap(system_secret);
-//   hmac_msg(hash_state, USER_ID_SEALER, STR_LEN(USER_ID_SEALER));
-//   hmac_finalize(hash_state, output);
-//   crit_munmap(hash_state);
-// }
+int pam_translated_user_auth_token(const unsigned char *user_password,
+                                   int user_password_len,
+                                   sha256_hash_t *output) {
+  secret_state_t *session;
+  if (!(session = map_session_cred()))
+    return -1;
 
-// int handle_persistent_cred_secret(scrypt_operation_t op,
-//                                   const unsigned char *input_cred,
-//                                   int input_cred_len, int output_file) {
-//   secret_state_t *system_secret =
-//       crit_mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED,
-//                 get_system_secret_fd(), 0);
-//   hash_state_t *hash_state;
-//   crit_memfd_secret_alloc(hash_state);
-//   hmac(hash_state, input_cred, input_cred_len, *system_secret,
-//   sizeof(*system_secret)); hmac_msg(hash_state,
-//   STORAGE_ENCRYPTION_KEY_SEALER, STR_LEN(STORAGE_ENCRYPTION_KEY_SEALER));
-//   crit_munmap(system_secret);
-//   sha256_hash_t *storage_key = hmac_result(hash_state);
-//   scrypt_action_t action =
-//       set_scrypt_input_data(default_trivial_args(), input_cred,
-//       input_cred_len);
-//   action.op = op;
-//   int ret;
-//   sha256_hash_t *hash = hmac_result(hash_state);
-//   PROP_ERR(ret = scrypt_into_fd(action, (unsigned char *)hash, sizeof(*hash),
-//                                 output_file));
-//   crit_munmap(hash_state);
-//   return ret;
-// }
+  hash_state_t *auth_token_generator;
+  crit_memfd_secret_alloc(auth_token_generator);
+  hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
+       STR_LEN(HASH_TYPE_USER_PASSWORD), user_password, user_password_len);
+  hmac_msg(auth_token_generator, *session, sizeof(*session));
+  crit_munmap(session);
+  secret_state_t *system_secret =
+      crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
+                get_system_secret_fd(), 0);
+  hmac_msg(auth_token_generator, *system_secret, sizeof(*system_secret));
+  crit_munmap(system_secret);
+  hmac_finalize(auth_token_generator, output);
+  crit_munmap(auth_token_generator);
+  return 0;
+}
 
 int create_user_persistent_cred_secret(int secret_fd,
                                        const unsigned char *user_password,
@@ -528,6 +523,11 @@ int create_user_persistent_cred_secret(int secret_fd,
     if (new_secret)
       close(secret_fd);
     return -1;
+  }
+  if (session_secret_fd != -1) {
+    log_error("Generated new secret despite already having a secret");
+  } else {
+    session_secret_fd = secret_fd;
   }
   return persistent_len;
 }
@@ -560,7 +560,7 @@ secret_state_t *map_session_cred() {
 
 int unlock_persistent_user_secret(const unsigned char *user_password,
                                   int user_password_len) {
-  uid_t user = getuid();
+  uid_t user = geteuid();
   int storage_fd, persistent_fd, secret_fd, masked_fd, protected_fd;
   PROP_ERR(storage_fd = get_persistent_storage_fd());
   PROP_ERR(persistent_fd =
@@ -623,6 +623,10 @@ int unlock_plain_user_secret(const unsigned char *user_password,
     return -1;
   }
   int secret_fd, protected_fd;
+  if (session_encrypted_data_len <= 0) {
+    errno = EINVAL;
+    return -1;
+  }
   unsigned char *encrypted_data =
       mmap(NULL, session_encrypted_data_len, PROT_READ, MAP_SHARED,
            session_encrypted_fd, 0);

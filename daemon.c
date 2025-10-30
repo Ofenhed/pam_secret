@@ -17,11 +17,11 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 
-int connect_daemon() {
+int connect_daemon(uid_t(get_target_user)()) {
   int sock;
   struct sockaddr_un address;
   if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s",
-               get_runtime_dir(),
+               get_runtime_dir(get_target_user),
                get_socket_name()) >= ARR_LEN(address.sun_path)) {
     CRITICAL_ERR("Socket path too long");
   }
@@ -151,9 +151,9 @@ int run_daemon(const char *name, int socket_not_listening) {
   int persistent_inotify, inotify_key_deleted, inotify_run_dir_modified;
   const char *const buf_end = ARR_END(printf_buf);
   peer_state_t *state_tmp;
-  uid_t server_user = getuid();
+  uid_t server_user = geteuid();
 
-  int epollfd;
+  int epollfd, server_shutdown = 0;
   struct epoll_event ev;
 
   PROP_CRIT(epollfd = epoll_create1(O_CLOEXEC));
@@ -162,7 +162,7 @@ int run_daemon(const char *name, int socket_not_listening) {
     PROP_CRIT(persistent_inotify = inotify_init1(IN_CLOEXEC));
     const char *path = bufnprintf(&buf_ptr, buf_end, "%s/%s",
                                   get_persistent_storage_location(),
-                                  get_persistent_secret_filename(getuid()));
+                                  get_persistent_secret_filename(geteuid()));
     PROP_CRIT(inotify_key_deleted = inotify_add_watch(
                   persistent_inotify, path,
                   IN_DELETE_SELF | IN_MOVE_SELF | IN_ONESHOT));
@@ -178,7 +178,7 @@ int run_daemon(const char *name, int socket_not_listening) {
 
   struct sockaddr_un address;
   address.sun_family = AF_UNIX;
-  const char *const socket_dir = get_runtime_dir();
+  const char *const socket_dir = get_runtime_dir(geteuid);
   const char *const socket_name = get_socket_name();
   if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s", socket_dir,
                socket_name) >= ARR_LEN(address.sun_path)) {
@@ -206,7 +206,12 @@ int run_daemon(const char *name, int socket_not_listening) {
     struct epoll_event events[5];
     int nfds;
 
-    PROP_CRIT(nfds = epoll_wait(epollfd, events, ARR_LEN(events), -1));
+    PROP_CRIT(nfds = epoll_wait(epollfd, events, ARR_LEN(events),
+                                server_shutdown ? 3000 : -1));
+    if (server_shutdown && !nfds) {
+      log_debug("I feel ready now. Take me.");
+      exit(0);
+    }
     for (int n = 0; n < nfds; ++n) {
       peer_state_t *peer = peer_state(&events[n]);
       write_buf_t *b;
@@ -248,19 +253,23 @@ int run_daemon(const char *name, int socket_not_listening) {
           if (iev_ptr->wd == inotify_key_deleted) {
             log_warning(
                 "User key deleted!\nThat's someone else's problem now.\n");
+            epoll_ctl(epollfd, EPOLL_CTL_DEL, server, &events[n]);
             close(server);
-            char *args[] = {(char *)name, "daemon", NULL};
-            execv("/proc/self/exe", args);
-            exit(0);
+            if (fork() == 0) {
+              char *args[] = {(char *)name, "daemon", NULL};
+              execv("/proc/self/exe", args);
+              exit(EXIT_FAILURE);
+            }
+            server_shutdown = 1;
           } else if (iev_ptr->wd == inotify_run_dir_modified &&
                      strcmp(iev_ptr->name, socket_name) == 0) {
             log_error("They killed my socket file.\nWait for me, buddy...\n");
+            epoll_ctl(epollfd, EPOLL_CTL_DEL, server, &events[n]);
             close(server);
-            exit(0);
+            server_shutdown = 1;
           }
           iev_ptr += sizeof(struct inotify_event) + iev_ptr->len;
         }
-        // TODO: Should this be handled gracefully instead?
       } else if (peer->peer_kind == CLIENT) {
         while (peer->client_state.write_buf != NULL) {
           write_buf_t *write_buf = peer->client_state.write_buf;
@@ -300,9 +309,17 @@ int run_daemon(const char *name, int socket_not_listening) {
             break;
           }
         }
-        if (peer->client_state.write_buf == NULL) {
+        if (peer->client_state.write_buf == NULL &&
+            events[n].events & EPOLLOUT) {
           events[n].events = EPOLLIN;
           epoll_ctl(epollfd, EPOLL_CTL_MOD, peer->fd, &events[n]);
+        }
+        if (server_shutdown && events[n].events & EPOLLIN) {
+          events[n].events = EPOLLOUT;
+          if ((b = new_write_buf(&peer->client_state.write_buf))) {
+            HAS_OUTPUT();
+            b->buf_kind = WRITE_BUF_CLOSE;
+          }
         }
         msg_info_t info;
         msg_context_t context[2];
@@ -319,9 +336,9 @@ int run_daemon(const char *name, int socket_not_listening) {
         }
         if (info.kind == MSG_HASH_DATA) {
           fd = context[0].fd;
-          if (info.data_len <= 0 || info.data_len > 1 << 30) {
+          if (info.data_len < 0 || info.data_len > 1 << 30) {
             close(fd);
-            log_debug("Invalid file size received from peer: %i\n",
+            log_debug("Invalid file size received from peer: %i",
                       info.data_len);
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               HAS_OUTPUT();
@@ -329,8 +346,11 @@ int run_daemon(const char *name, int socket_not_listening) {
             }
             continue;
           }
-          unsigned char *data = crit_mmap(NULL, info.data_len, PROT_READ,
-                                          MAP_SHARED | MAP_POPULATE, fd, 0);
+          unsigned char *data = NULL;
+          if (info.data_len > 0) {
+            data = crit_mmap(NULL, info.data_len, PROT_READ,
+                             MAP_SHARED | MAP_POPULATE, fd, 0);
+          }
           close(fd);
           if (peer->client_state.client_kind == NEW_CLIENT) {
             secret_state_t *session_secret;
@@ -367,7 +387,9 @@ int run_daemon(const char *name, int socket_not_listening) {
           } else if (peer->client_state.client_kind == HASHER_CLIENT) {
             hmac_msg(peer->client_state.hash_state, data, info.data_len);
           }
-          PROP_CRIT(munmap(data, info.data_len));
+          if (data != NULL) {
+            PROP_CRIT(munmap(data, info.data_len));
+          }
         } else if (info.kind == MSG_HASH_FINALIZE &&
                    peer->client_state.client_kind == HASHER_CLIENT) {
           secret_state_t *session_secret;
@@ -409,11 +431,21 @@ int run_daemon(const char *name, int socket_not_listening) {
                    peer->client_state.client_kind == NEW_CLIENT) {
           log_debug("Received authentication attempt from %i\n", peer->fd);
           unsigned char *auth_mem;
-          if ((auth_mem = mmap(NULL, info.data_len, PROT_READ, MAP_SHARED,
-                               context[0].fd, 0)) == MAP_FAILED) {
-            log_debug("Got invalid file descriptor from peer\n");
+          if (info.data_len <= 0 || info.data_len > MAX_PASSWORD_LENGTH) {
+            log_debug("Illegal data length from peer: %i", info.data_len);
             close(context[0].fd);
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
+              HAS_OUTPUT();
+              b->buf_kind = WRITE_BUF_CLOSE;
+              continue;
+            }
+          }
+          if ((auth_mem = mmap(NULL, info.data_len, PROT_READ, MAP_SHARED,
+                               context[0].fd, 0)) == MAP_FAILED) {
+            log_debug("Got invalid file descriptor from peer");
+            close(context[0].fd);
+            if ((b = new_write_buf(&peer->client_state.write_buf))) {
+              HAS_OUTPUT();
               b->buf_kind = WRITE_BUF_CLOSE;
             }
             continue;
@@ -421,39 +453,24 @@ int run_daemon(const char *name, int socket_not_listening) {
           close(context[0].fd);
           msg_info_t reply = {0};
           if (authenticate_user(auth_mem, info.data_len) == 1) {
-            secret_state_t *session;
-            if ((session = map_session_cred())) {
-              log_debug("Creating reply\n");
-              reply.kind = MSG_AUTHENTICATED;
-              hash_state_t *auth_token_generator;
-              crit_memfd_secret_alloc(auth_token_generator);
-              hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
-                   STR_LEN(HASH_TYPE_USER_PASSWORD), auth_mem, info.data_len);
-              hmac_msg(auth_token_generator, *session, sizeof(*session));
-              crit_munmap(session);
-              secret_state_t *system_secret =
-                  crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
-                            get_system_secret_fd(), 0);
-              hmac_msg(auth_token_generator, *system_secret,
-                       sizeof(*system_secret));
-              crit_munmap(system_secret);
-              int auth_token_fd;
-              PROP_CRIT(auth_token_fd = memfd_secret(O_CLOEXEC));
-              PROP_CRIT(ftruncate(auth_token_fd, sizeof(sha256_hash_t)));
-              sha256_hash_t *auth_token =
-                  crit_mmap(NULL, sizeof(*auth_token), PROT_WRITE, MAP_SHARED,
-                            auth_token_fd, 0);
-              hmac_finalize(auth_token_generator, auth_token);
-              crit_munmap(auth_token_generator);
-              crit_munmap(auth_token);
-              if ((b = new_write_buf(&peer->client_state.write_buf))) {
-                HAS_OUTPUT();
-                b->info = reply;
-                b->context[0] =
-                    (msg_context_t){{b->fds_to_close[0] = auth_token_fd}};
-                b->context_len = b->num_fds_to_close = 1;
-              }
+            log_debug("Creating reply\n");
+            reply.kind = MSG_AUTHENTICATED;
+            int auth_token_fd;
+            PROP_CRIT(auth_token_fd = memfd_secret(O_CLOEXEC));
+            PROP_CRIT(ftruncate(auth_token_fd, sizeof(sha256_hash_t)));
+            sha256_hash_t *auth_token =
+                crit_mmap(NULL, sizeof(*auth_token), PROT_WRITE, MAP_SHARED,
+                          auth_token_fd, 0);
+            if (pam_translated_user_auth_token(auth_mem, info.data_len,
+                                               auth_token) != -1 &&
+                (b = new_write_buf(&peer->client_state.write_buf))) {
+              HAS_OUTPUT();
+              b->info = reply;
+              b->context[0] =
+                  (msg_context_t){{b->fds_to_close[0] = auth_token_fd}};
+              b->context_len = b->num_fds_to_close = 1;
             }
+            crit_munmap(auth_token);
             peer->client_state.client_has_authenticated |= 1;
           } else {
             reply.kind = MSG_NOT_AUTHENTICATED;
@@ -475,7 +492,8 @@ int run_daemon(const char *name, int socket_not_listening) {
         } else if (info.kind == MSG_UPDATE_PASSWORD) {
           int secret_fd;
           if (!peer->client_state.client_has_authenticated ||
-              (secret_fd = get_session_secret_fd()) == -1) {
+              (secret_fd = get_session_secret_fd()) == -1 ||
+              info.data_len <= 0 || info.data_len > MAX_PASSWORD_LENGTH) {
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               HAS_OUTPUT();
               msg_info_t reply = {0};
@@ -488,6 +506,17 @@ int run_daemon(const char *name, int socket_not_listening) {
           unsigned char *pw_mem = crit_mmap(NULL, info.data_len, PROT_READ,
                                             MAP_SHARED, context[0].fd, 0);
           close(context[0].fd);
+          int auth_token_fd;
+          {
+            PROP_CRIT(auth_token_fd = memfd_secret(O_CLOEXEC));
+            PROP_CRIT(ftruncate(auth_token_fd, sizeof(sha256_hash_t)));
+            sha256_hash_t *auth_token =
+                crit_mmap(NULL, sizeof(*auth_token), PROT_WRITE, MAP_SHARED,
+                          auth_token_fd, 0);
+            PROP_CRIT(pam_translated_user_auth_token(pw_mem, info.data_len,
+                                                     auth_token));
+            crit_munmap(auth_token);
+          }
           int output_fd = memfd_create("new_persistent", 0);
           PROP_CRIT(create_user_persistent_cred_secret(
               secret_fd, pw_mem, info.data_len, output_fd));
@@ -520,6 +549,9 @@ int run_daemon(const char *name, int socket_not_listening) {
               } else if (WEXITSTATUS(wstatus) == 0) {
                 reply.kind = MSG_UPDATE_PASSWORD_SUCCESS;
                 b->info = reply;
+                b->context[0] =
+                    (msg_context_t){{b->fds_to_close[0] = auth_token_fd}};
+                b->context_len = b->num_fds_to_close = 1;
                 continue;
               } else {
                 reply.kind = MSG_UNKNOWN_ERROR;

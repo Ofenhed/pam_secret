@@ -34,7 +34,7 @@ int install_new_user_key(int parent_auth_fd, int new_content) {
     return -1;
   }
   log_debug("Installing new credential");
-  PROP_ERR(install_user_session_cred_secret(new_content));
+  PROP_ERR(install_user_session_cred_secret(new_content, geteuid(), false));
   log_debug("Finalizing");
   PROP_ERR(drop_root_privileges(0));
   return 0;
@@ -64,14 +64,14 @@ EXPORTED int exported_main(int argc, char **argv) {
 #endif
 #define SOCKET_CONNECT()                                                       \
   {                                                                            \
-    if (daemon_sock == -1 && (daemon_sock = connect_daemon()) == -1) {         \
+    if (daemon_sock == -1 && (daemon_sock = connect_daemon(geteuid)) == -1) {  \
       CRITICAL_ERR("No running daemon found");                                 \
     }                                                                          \
   }
   for (int arg = 1; arg < argc; ++arg) {
     int separator = -1;
     if (strcmp("create_secret", argv[arg]) == 0) {
-      if (get_persistent_secret_fd() != -1) {
+      if (get_persistent_secret_fd(geteuid()) != -1) {
         fputs("You already have a user credential installed.\nPlease contact "
               "an administrator to reset your credential.\n",
               stderr);
@@ -80,10 +80,7 @@ EXPORTED int exported_main(int argc, char **argv) {
       char *password[MAX_PASSWORD_LENGTH],
           *verify_password[MAX_PASSWORD_LENGTH];
       int secret_fd;
-      int runtime_dir;
-      PROP_CRIT(runtime_dir = open(get_runtime_dir(), O_DIRECTORY));
-      PROP_CRIT(secret_fd = openat(runtime_dir, ".", O_TMPFILE | O_RDWR));
-      PROP_CRIT(close(runtime_dir));
+      PROP_CRIT(secret_fd = open(get_runtime_dir(geteuid), O_TMPFILE | O_RDWR));
       crit_memfd_secret_alloc(*password);
       crit_memfd_secret_alloc(*verify_password);
       int password_len;
@@ -99,8 +96,8 @@ EXPORTED int exported_main(int argc, char **argv) {
         fprintf(stderr, "Aborted\n");
         return 0;
       }
-      int result;
-      if ((result = create_user_persistent_cred_secret(
+      int cred_len;
+      if ((cred_len = create_user_persistent_cred_secret(
                -1, (unsigned char *)*password, password_len, secret_fd)) ==
           -1) {
         perror("Could not create session");
@@ -157,14 +154,12 @@ EXPORTED int exported_main(int argc, char **argv) {
       int password_len = strlen(password);
       PROP_ERR(pass_fd = memfd_secret(O_CLOEXEC));
       PROP_ERR(ftruncate(pass_fd, password_len));
-      char *password_out;
-      if ((password_out = mmap(NULL, password_len, PROT_WRITE, MAP_SHARED,
-                               pass_fd, 0)) == MAP_FAILED) {
-        perror("Could not map password\n");
-        return -1;
+      if (password_len > 0) {
+        char *password_out =
+            crit_mmap(NULL, password_len, PROT_WRITE, MAP_SHARED, pass_fd, 0);
+        memcpy(password_out, password, password_len);
+        munmap(password_out, password_len);
       }
-      memcpy(password_out, password, password_len);
-      munmap(password_out, password_len);
       msg_info_t msg;
       msg_context_t context[2] = {{{pass_fd}}};
       msg.kind = MSG_UPDATE_PASSWORD;
@@ -177,7 +172,6 @@ EXPORTED int exported_main(int argc, char **argv) {
         fprintf(stderr, "Not authenticated\n");
         return -1;
       } else if (info.kind == MSG_AUTHENTICATED) {
-        fprintf(stderr, "Authenticated\n");
       }
     } else if (strcmp("lock", argv[arg]) == 0) {
       SOCKET_CONNECT();
@@ -242,13 +236,12 @@ EXPORTED int exported_main(int argc, char **argv) {
       int file;
       PROP_ERR(file = memfd_secret(O_CLOEXEC));
       PROP_ERR(ftruncate(file, text_len));
-      char *secret = mmap(NULL, text_len, PROT_WRITE, MAP_SHARED, file, 0);
-      if (secret == MAP_FAILED) {
-        perror("Could not map secret");
-        return -1;
+      if (text_len > 0) {
+        char *secret =
+            crit_mmap(NULL, text_len, PROT_WRITE, MAP_SHARED, file, 0);
+        memcpy(secret, text, text_len);
+        PROP_ERR(munmap(secret, text_len));
       }
-      memcpy(secret, text, text_len);
-      PROP_ERR(munmap(secret, text_len));
       msg_info_t msg;
       msg.kind = MSG_HASH_DATA;
       msg.data_len = text_len;
@@ -268,7 +261,7 @@ EXPORTED int exported_main(int argc, char **argv) {
     msg_context_t context[2];
     PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
     if (info.kind == MSG_NOT_AUTHENTICATED) {
-      fprintf(stderr, "Not authenticated");
+      fprintf(stderr, "Not authenticated\n");
       return EACCES;
     } else if (info.kind == MSG_HASH_FINALIZED) {
 

@@ -14,7 +14,6 @@ int msg_content_length(msg_info_t info) {
   case MSG_HASH_FINALIZE:
   case MSG_CLEAR_SECRET:
   case MSG_NOT_AUTHENTICATED:
-  case MSG_UPDATE_PASSWORD_SUCCESS:
   case MSG_UNKNOWN_ERROR:
 #ifdef DEBUG_QUERY_SECRETS
   case MSG_DUMP_SECRET:
@@ -24,6 +23,7 @@ int msg_content_length(msg_info_t info) {
   case MSG_AUTHENTICATED:
   case MSG_HASH_FINALIZED:
   case MSG_HASH_DATA:
+  case MSG_UPDATE_PASSWORD_SUCCESS:
   case MSG_UPDATE_PASSWORD:
     return 1;
   case MSG_PEER_EOF:

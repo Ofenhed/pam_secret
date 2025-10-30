@@ -1,9 +1,16 @@
 #pragma once
 
+#include "log.h"
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
+
+static const int stdin_fd = 0;
+static const int stdout_fd = 1;
+static const int stderr_fd = 2;
 
 #define ARR_LEN(x) (sizeof(x) / sizeof(x[0]))
 #define ARR_END(x) (x + ARR_LEN(x))
@@ -23,25 +30,25 @@
 
 #define CRITICAL_ERR(x)                                                        \
   {                                                                            \
-    perror(LINE " " x);                                                        \
+    log_error("Error (%s): %s", LINE, x);                                      \
     exit(EXIT_FAILURE);                                                        \
   }
 
 #define PROP_ERR_WITH(x, y)                                                    \
   {                                                                            \
     if ((x) == -1) {                                                           \
-      perror("Boom at " LINE "!");                                             \
+      log_error("Boom at %s: %s", LINE, strerror(errno));                      \
       {                                                                        \
         y                                                                      \
       }                                                                        \
       return -1;                                                               \
     }                                                                          \
   }
-#define PROP_ERR(x) PROP_ERR_WITH(x, perror("Boom at " LINE "!");)
+#define PROP_ERR(x) PROP_ERR_WITH(x, ;)
 #define PROP_CRIT(x)                                                           \
   {                                                                            \
     if ((x) == -1)                                                             \
-      CRITICAL_ERR()                                                           \
+      CRITICAL_ERR(strerror(errno))                                            \
   }
 
 #define EXPORTED __attribute__((visibility("default")))
@@ -76,7 +83,7 @@ int read_secret_password(char *restrict password, int password_len,
 
 int add_arg(const char ***args, const char *const *const args_end,
             const char *arg);
-const char *get_runtime_dir();
+const char *get_runtime_dir(uid_t(get_target_user)(void));
 
 inline static int inherit_fd(int fd) {
   // return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);

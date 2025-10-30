@@ -6,12 +6,18 @@ This is to be used in `pam.d/system-auth` by creating a profile which uses passw
 Previous:
 ```
 auth    sufficient    pam_unix.so {if not "without-nullok":nullok}
+
+
+password sufficient    pam_unix.so yescrypt shadow nullok use_authtok
 ```
 
 After:
 ```
-auth    [success=ok new_authtok_reqd=ok default=1 ignore=ignore]    pam_unix.so {if not "without-nullok":nullok}
-auth    [default=done ]                                             pam_secret.so
+auth    optional    pam_secret.so translate_authtok
+auth    sufficient    pam_unix.so {if not "without-nullok":nullok}
+
+password   requisite    pam_secret.so auto_install translate_authtok
+password   sufficient    pam_unix.so yescrypt shadow nullok use_authtok
 ```
 
 Preferably you should also run `tpm2_pcrreset` on your register on screen saver activation.
