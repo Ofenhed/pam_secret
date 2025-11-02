@@ -27,18 +27,6 @@ typedef struct {
   };
 } msg_info_t;
 
-typedef struct {
-  union {
-    int fd;
-  };
-} msg_context_t;
-
-inline static msg_context_t fd_to_context(int fd) {
-  msg_context_t c = {0};
-  c.fd = fd;
-  return c;
-}
-
 int msg_has_fd(msg_info_t kind);
 
 #ifndef _Nullable

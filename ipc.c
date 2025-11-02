@@ -39,8 +39,7 @@ int recv_peer_msg(int sock, msg_info_t *info, int *_Nullable fd) {
   struct iovec iov[1];
 
   ssize_t nbytes;
-  char buf[CMSG_SPACE(sizeof(msg_context_t) * 3)] = {
-      0x0d}; // TODO: WTF is this magic number?
+  char buf[CMSG_SPACE(sizeof(int))] = {0x0d}; // TODO: WTF is this magic number?
   struct cmsghdr *cmsghdr = (struct cmsghdr *)buf;
 
   msg_info_t msgs[1] = {0};
@@ -51,13 +50,13 @@ int recv_peer_msg(int sock, msg_info_t *info, int *_Nullable fd) {
   msg.msg_iov = iov;
   msg.msg_iovlen = ARR_LEN(iov);
   msg.msg_control = cmsghdr;
-  msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t) * 3);
+  msg.msg_controllen = CMSG_LEN(sizeof(int));
   msg.msg_flags = 0;
 
   {
     auto hdr = CMSG_FIRSTHDR(&msg);
     while (true) {
-      hdr->cmsg_len = CMSG_LEN(sizeof(msg_context_t));
+      hdr->cmsg_len = CMSG_LEN(sizeof(int));
       hdr->cmsg_level = SOL_SOCKET;
       hdr->cmsg_type = SCM_RIGHTS;
       if (!(hdr = CMSG_NXTHDR(&msg, hdr))) {
@@ -110,8 +109,7 @@ int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options) {
   }
 
   ssize_t nbytes;
-  char buf[CMSG_SPACE(sizeof(msg_context_t) * 3)] = {
-      0x0d}; // TODO: WTF is this magic number?
+  char buf[CMSG_SPACE(sizeof(int))] = {0x0d}; // TODO: WTF is this magic number?
   struct cmsghdr *cmsghdr = (struct cmsghdr *)buf;
 
   msg_info_t msgs[1] = {info};
@@ -123,7 +121,7 @@ int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options) {
   msg.msg_iovlen = ARR_LEN(iov);
   if (fd && *fd != -1) {
     msg.msg_control = cmsghdr;
-    msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t));
+    msg.msg_controllen = CMSG_LEN(sizeof(int));
   } else {
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
@@ -133,7 +131,7 @@ int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options) {
     auto hdr = CMSG_FIRSTHDR(&msg);
     if (fd && *fd != -1) {
       int *m = (int *)CMSG_DATA(hdr);
-      hdr->cmsg_len = CMSG_LEN(sizeof(msg_context_t));
+      hdr->cmsg_len = CMSG_LEN(sizeof(int));
       hdr->cmsg_level = SOL_SOCKET;
       hdr->cmsg_type = SCM_RIGHTS;
       *m = *fd;
