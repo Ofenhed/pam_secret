@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+static const mode_t SYSTEM_ENC_MODE = 0440;
+
 int maybe_create_system_secret() {
   int wd, secret_fd;
   const char *state_filename = get_system_secret_filename();
@@ -14,7 +16,7 @@ int maybe_create_system_secret() {
     return 0;
   }
   char tmpfile[256];
-  secret_fd = openat(wd, ".", O_TMPFILE | O_CLOEXEC | O_RDWR, 0400);
+  secret_fd = openat(wd, ".", O_TMPFILE | O_CLOEXEC | O_RDWR, SYSTEM_ENC_MODE);
   snprintf(tmpfile, ARR_LEN(tmpfile), "/proc/self/fd/%i", secret_fd);
   if (secret_fd == -1) {
     if (errno == EEXIST) {
@@ -25,7 +27,7 @@ int maybe_create_system_secret() {
   }
   PROP_ERR(ftruncate(secret_fd, SECRET_LEN));
   PROP_ERR(set_memfd_random(secret_fd, SECRET_LEN));
-  int umask_before = umask(~0400);
+  mode_t umask_before = umask(~SYSTEM_ENC_MODE);
   PROP_ERR(linkat(AT_FDCWD, tmpfile, wd, state_filename, AT_SYMLINK_FOLLOW));
   umask(umask_before);
   return 1;
@@ -36,15 +38,16 @@ int install_persistent_credentials_directory() {
   int dir_fd;
   gid_t group;
   if ((group = manager_group()) == -1) {
+    const char *group_name = manager_group_name();
     fprintf(stderr,
             "The group %s does not exist. Please create it:\n groupadd "
-            "--system enc-auth\n",
-            manager_group_name());
+            "--system %s\n",
+            group_name, group_name);
     return -1;
   }
   PROP_ERR(setgid(group));
   PROP_ERR(setuid(0));
-  int cred_dir_perm = 02750;
+  mode_t cred_dir_perm = 02700;
   mkdir(dir, cred_dir_perm);
   PROP_ERR(dir_fd = get_persistent_storage_fd());
   PROP_ERR(fchdir(dir_fd));

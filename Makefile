@@ -1,5 +1,20 @@
-#CFLAGS += -std=c23 -fvisibility=hidden -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
-CFLAGS += -std=c23 -Wall -g -D_GNU_SOURCE -DSERVICE_GROUP=qubes
+#CFLAGS += -std=c23 -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
+pam_secret_group = qubes
+CFLAGS += -std=c23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wformat=2 -Wformat-security -D__USE_GNU -D_GNU_SOURCE -DSERVICE_GROUP=$(pam_secret_group)
+# CFLAGS += -Wconversion
+pam_lib_dir = /usr/lib64/security
+
+ifeq ($(CC), clang)
+	CFLAGS = -fblocks
+endif
+
+ifeq ($(target), release)
+	CFLAGS += -O2 -fstack-protector-all -Wstrict-overflow
+	LDFLAGS += -z,noexecstack -z,noexecheap -z,relro -z,now
+endif
+ifeq ($(target), debug)
+	CFLAGS += -DDEBUG
+endif
 
 all: build/pam_secret.so build/pam_secret
 
@@ -12,12 +27,13 @@ build:
 build/%.o: %.c build
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
-build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o build/log.o
+build/pam_secret.so: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o build/log.o build/path.o
 	# $(CC) $(CFLAGS) -fPIC -fPIE -pie -shared -Wl,-soname,$@ -Wl,-e,lib_entry $^ -lssl -lcrypto -lcap -lpam -o $@
-	$(CC) $(CFLAGS) -fPIC -shared $^ -lssl -lcrypto -lcap -lpam -o $@
+	$(CC) -fPIC -shared $^ -lssl -lcrypto -lcap -lpam -o $@ $(LDFLAGS) -z,now -Wl,-soname=$(pam_lib_dir)/pam_secret.so
 
-build/pam_secret-debug: build/libwrapper.o
-	$(CC) $(CFLAGS) -g -fPIE -pie -ldl $^ -o $@
+build/pam_secret-debug: build/libwrapper.o build/pam_secret.so
+	# $(CC) $(CFLAGS) -g -fPIE -pie -ldl $< -o $@
+	$(CC) $(LDFLAGS) -g -fPIE -pie $< -o $@ -Lbuild -l:pam_secret.so
 
 build/pam_secret.symbols: build/pam_secret-debug
 	objcopy --only-keep-debug $? $@
@@ -28,7 +44,7 @@ build/pam_secret: build/pam_secret-debug build/pam_secret.symbols
 	objcopy --add-gnu-debuglink=build/pam_secret.symbols $@
 
 install-pam: build/pam_secret.so
-	install --mode=755 --owner=root --group=root --target-directory=/usr/lib64/security/ $<
+	install --mode=755 --owner=root --group=root --target-directory=$(pam_lib_dir)/ $<
 
 install-main: build/pam_secret
 	install --mode=755 --owner=root --group=root --target-directory=/usr/sbin/ $<

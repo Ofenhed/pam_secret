@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #define MAX_PASSWORD_LENGTH 64
 
@@ -33,20 +34,33 @@ int install_new_user_key(int parent_auth_fd, int new_content) {
     errno = EACCES;
     return -1;
   }
+  // TODO; Check if something like this is required. It shouldn't be, since the
+  // parent directory is readable only by root.
+  // log_debug("Making sure the auth fd is accessible");
+  // int flags;
+  // if (!((flags = fcntl(parent_auth_fd, F_GETFL)) & (O_RDONLY | O_RDWR |
+  // O_WRONLY))) {
+  //    log_debug("File descriptor was in mode %x, want one masked with %x\n",
+  //    flags, (O_RDONLY | O_RDWR | O_WRONLY));
+  //  errno = EACCES;
+  //  return -1;
+  //}
   log_debug("Installing new credential");
+  // TODO: Figure out why install_user_session_cred_secret borks
   PROP_ERR(install_user_session_cred_secret(new_content, geteuid(), false));
   log_debug("Finalizing");
   PROP_ERR(drop_root_privileges(0));
   return 0;
 }
 
-EXPORTED int exported_main(int argc, char **argv) {
+EXPORTED int libpam_secret_exported_main(int argc, char **argv) {
   int hashed = 0;
   if (argc == 2 && strcmp("install", argv[1]) == 0) {
     PROP_ERR(install_persistent_credentials_directory());
     PROP_ERR(maybe_create_system_secret());
     return 0;
   }
+
   {
     int auth_fd, source_fd, bytes_read = 0;
     if (argc == 2 &&
@@ -119,23 +133,25 @@ EXPORTED int exported_main(int argc, char **argv) {
       int pass_fd;
       char *password;
       PROP_ERR(pass_fd = memfd_secret(O_CLOEXEC));
+      DEFER({ close(pass_fd); });
       PROP_ERR(ftruncate(pass_fd, MAX_PASSWORD_LENGTH));
       password = crit_mmap(NULL, MAX_PASSWORD_LENGTH, PROT_READ | PROT_WRITE,
                            MAP_SHARED, pass_fd, 0);
+      DEFER({ munmap(password, MAX_PASSWORD_LENGTH); });
       int password_len =
           read_secret_password(password, MAX_PASSWORD_LENGTH, "Password: ");
       msg_info_t msg;
-      msg_context_t context[2] = {{{pass_fd}}};
       msg.kind = MSG_AUTHENTICATE;
       msg.data_len = password_len;
-      PROP_ERR(send_peer_msg(daemon_sock, msg, context, 1, 0));
+      PROP_ERR(send_peer_msg(daemon_sock, msg, &pass_fd, 0));
       int len;
-      PROP_ERR(len = recv_peer_msg(daemon_sock, &msg, context));
+      int auth_fd;
+      PROP_ERR(len = recv_peer_msg(daemon_sock, &msg, &auth_fd));
       if (msg.kind == MSG_NOT_AUTHENTICATED) {
         fprintf(stderr, "Not authenticated\n");
         return -1;
       } else if (msg.kind == MSG_AUTHENTICATED) {
-        close(context[0].fd);
+        close(auth_fd);
       }
 #ifdef DEBUG_QUERY_SECRETS
     } else if (sscanf(argv[arg], "dump_secret=%u%n", &tmp_fd, &separator) ==
@@ -151,33 +167,37 @@ EXPORTED int exported_main(int argc, char **argv) {
       SOCKET_CONNECT();
       const char *password = getpass("New password: ");
       int pass_fd;
-      int password_len = strlen(password);
+      size_t password_len = strlen(password);
       PROP_ERR(pass_fd = memfd_secret(O_CLOEXEC));
+      DEFER({ close(pass_fd); });
       PROP_ERR(ftruncate(pass_fd, password_len));
       if (password_len > 0) {
         char *password_out =
             crit_mmap(NULL, password_len, PROT_WRITE, MAP_SHARED, pass_fd, 0);
+        DEFER({ munmap(password_out, password_len); });
         memcpy(password_out, password, password_len);
-        munmap(password_out, password_len);
       }
       msg_info_t msg;
-      msg_context_t context[2] = {{{pass_fd}}};
       msg.kind = MSG_UPDATE_PASSWORD;
       msg.data_len = password_len;
-      PROP_ERR(send_peer_msg(daemon_sock, msg, context, 1, 0));
+      PROP_ERR(send_peer_msg(daemon_sock, msg, &pass_fd, 0));
       int len;
       msg_info_t info;
-      PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
+      int auth_fd;
+      PROP_ERR(len = recv_peer_msg(daemon_sock, &info, &auth_fd));
       if (info.kind == MSG_UPDATE_PASSWORD_SUCCESS) {
-        fprintf(stderr, "Not authenticated\n");
-        return -1;
+        close(auth_fd);
+        log_info("Password updated\n");
+        return 0;
       } else if (info.kind == MSG_AUTHENTICATED) {
+        close(auth_fd);
+        log_info("Authenticated\n");
       }
     } else if (strcmp("lock", argv[arg]) == 0) {
       SOCKET_CONNECT();
       msg_info_t msg;
       msg.kind = MSG_CLEAR_SECRET;
-      PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0, 0));
+      PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0));
     } else if (strcmp("daemon", argv[arg]) == 0) {
       int next = arg + 1;
       int socket_up_indicator[2] = {-1, -1};
@@ -209,14 +229,14 @@ EXPORTED int exported_main(int argc, char **argv) {
       int file;
       int filesize;
       PROP_ERR(file = open(filename, O_CLOEXEC | O_RDONLY, 0));
+      DEFER({ close(file); });
       PROP_ERR(filesize = lseek(file, 0, SEEK_END));
       PROP_ERR(lseek(file, 0, SEEK_SET));
       SOCKET_CONNECT();
-      msg_context_t context[] = {fd_to_context(file)};
       msg_info_t msg;
       msg.kind = MSG_HASH_DATA;
       msg.data_len = filesize;
-      PROP_ERR(send_peer_msg(daemon_sock, msg, context, ARR_LEN(context), 0));
+      PROP_ERR(send_peer_msg(daemon_sock, msg, &file, 0));
     } else if ((sscanf(argv[arg], "s=%n", &separator) == 0 &&
                 separator != -1) ||
                (sscanf(argv[arg], "str=%n", &separator) == 0 &&
@@ -232,21 +252,21 @@ EXPORTED int exported_main(int argc, char **argv) {
       ++hashed;
       SOCKET_CONNECT();
       char *text = argv[arg] + separator;
-      int text_len = strlen(text);
+      size_t text_len = strlen(text);
       int file;
       PROP_ERR(file = memfd_secret(O_CLOEXEC));
+      DEFER({ close(file); });
       PROP_ERR(ftruncate(file, text_len));
       if (text_len > 0) {
         char *secret =
             crit_mmap(NULL, text_len, PROT_WRITE, MAP_SHARED, file, 0);
+        DEFER({ munmap(secret, text_len); });
         memcpy(secret, text, text_len);
-        PROP_ERR(munmap(secret, text_len));
       }
       msg_info_t msg;
       msg.kind = MSG_HASH_DATA;
       msg.data_len = text_len;
-      msg_context_t context[] = {fd_to_context(file)};
-      PROP_ERR(send_peer_msg(daemon_sock, msg, context, ARR_LEN(context), 0));
+      PROP_ERR(send_peer_msg(daemon_sock, msg, &file, 0));
     } else {
       fprintf(stderr, "Unknown command %s\n", argv[arg]);
       return -1;
@@ -255,18 +275,18 @@ EXPORTED int exported_main(int argc, char **argv) {
   if (hashed) {
     msg_info_t msg;
     msg.kind = MSG_HASH_FINALIZE;
-    PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0, 0));
+    PROP_ERR(send_peer_msg(daemon_sock, msg, NULL, 0));
     int len;
     msg_info_t info;
-    msg_context_t context[2];
-    PROP_ERR(len = recv_peer_msg(daemon_sock, &info, context));
+    int hashed_fd;
+    PROP_ERR(len = recv_peer_msg(daemon_sock, &info, &hashed_fd));
     if (info.kind == MSG_NOT_AUTHENTICATED) {
       fprintf(stderr, "Not authenticated\n");
       return EACCES;
     } else if (info.kind == MSG_HASH_FINALIZED) {
 
       sha256_hash_t *mem = crit_mmap(NULL, sizeof(sha256_hash_t), PROT_READ,
-                                     MAP_SHARED, context[0].fd, 0);
+                                     MAP_SHARED, hashed_fd, 0);
       sha256_hash_hex_t hash = hash_to_hex(mem);
       crit_munmap(mem);
       printf("%s%s", hash.printable, isatty(1) ? "\n" : "");

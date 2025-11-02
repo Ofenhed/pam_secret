@@ -76,32 +76,34 @@ int init_privileged() {
   assert(!initialized);
   initialized = true;
   protect_stdin();
+  void init_proc_fds(); // defined in path.c
+  init_proc_fds();
+  auto caps = cap_get_proc();
+  DEFER({ cap_free(caps); });
+  PROP_CRIT(_gain_root_privileges(caps));
   int persistent_storage;
   if ((persistent_storage = get_persistent_storage_fd()) == -1) {
-    fputs("You are not authorized to use this service\n", stderr);
+    fputs("pam_secret is not installed", stderr);
     exit(-1);
   }
-  auto caps = cap_get_proc();
-  PROP_CRIT(_gain_root_privileges(caps));
-  if (get_system_secret_fd() == -1) {
-    log_error("Could not initialize process privileges");
-    exit(EXIT_FAILURE);
-  }
+  PROP_CRIT(get_system_secret_fd());
   uid_t user = geteuid();
   int my_cred;
-  if ((my_cred = openat(persistent_storage,
-                        get_persistent_secret_filename(user), O_RDONLY, 0)) ==
-      -1) {
+  if ((my_cred = open_persistent_secret_fd(user)) == -1) {
+    perror("Could not initialize process privileges");
+    exit(EXIT_FAILURE);
+  }
+  close(my_cred);
+  PROP_CRIT(_drop_root_privileges(caps, 1));
+  if ((my_cred = open_persistent_secret_fd(user)) == -1) {
     log_warning("No user credential installed");
   }
+  DEFER({ close(my_cred); });
   struct stat stats;
   fstat(my_cred, &stats);
   if (stats.st_uid != user) {
     log_error("I don't own my secret\n");
   }
-  close(my_cred);
-  PROP_CRIT(_drop_root_privileges(caps, 1));
-  cap_free(caps);
   return 0;
 }
 

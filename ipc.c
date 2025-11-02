@@ -9,7 +9,7 @@
 
 inline const char *get_socket_name() { return "encrypted-shadow"; }
 
-int msg_content_length(msg_info_t info) {
+int msg_has_fd(msg_info_t info) {
   switch (info.kind) {
   case MSG_HASH_FINALIZE:
   case MSG_CLEAR_SECRET:
@@ -34,7 +34,7 @@ int msg_content_length(msg_info_t info) {
   return -1;
 }
 
-int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]) {
+int recv_peer_msg(int sock, msg_info_t *info, int *_Nullable fd) {
   struct msghdr msg = {0};
   struct iovec iov[1];
 
@@ -77,29 +77,37 @@ int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]) {
     errno = EINVAL;
     return -1;
   }
+
+  if (fd != NULL)
+    *fd = -1;
+
   auto hdr = CMSG_FIRSTHDR(&msg);
-  int context_len;
-  PROP_ERR(context_len = msg_content_length(msg_kind));
-  for (int i = 0; i < context_len; ++i) {
-    if (hdr == NULL) {
-      errno = EINVAL;
-      return -1;
+  if (hdr != NULL) {
+    if (hdr->cmsg_type != SCM_RIGHTS) {
+      log_warning("Illegal package type %i", hdr->cmsg_type);
+    } else {
+      int *m = (int *)CMSG_DATA(hdr);
+      if (fd == NULL) {
+        close(*m);
+      } else {
+        *fd = *m;
+      }
     }
-    msg_context_t *pkg = (msg_context_t *)CMSG_DATA(hdr);
-    (data[i]) = *pkg;
-    hdr = CMSG_NXTHDR(&msg, hdr);
   }
 
   *info = msg_kind;
   return 1;
 }
 
-int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
-                  int context_len, int options) {
+int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options) {
   struct msghdr msg = {0};
   struct iovec iov[1];
 
-  assert(context_len == msg_content_length(info));
+  if ((fd == NULL || *fd == -1) != !msg_has_fd(info)) {
+    log_error("Invalid fd %p (%i) set for signal %i (expected to be %i)", fd,
+              *fd, info.kind, MSG_UNKNOWN_ERROR);
+    exit(EXIT_FAILURE);
+  }
 
   ssize_t nbytes;
   char buf[CMSG_SPACE(sizeof(msg_context_t) * 3)] = {
@@ -113,9 +121,9 @@ int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
 
   msg.msg_iov = iov;
   msg.msg_iovlen = ARR_LEN(iov);
-  if (context_len > 0) {
+  if (fd && *fd != -1) {
     msg.msg_control = cmsghdr;
-    msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t) * context_len);
+    msg.msg_controllen = CMSG_LEN(sizeof(msg_context_t));
   } else {
     msg.msg_control = NULL;
     msg.msg_controllen = 0;
@@ -123,20 +131,15 @@ int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
   msg.msg_flags = 0;
   {
     auto hdr = CMSG_FIRSTHDR(&msg);
-    for (int i = 0; i < context_len; ++i) {
-      msg_context_t *m = (msg_context_t *)CMSG_DATA(hdr);
+    if (fd && *fd != -1) {
+      int *m = (int *)CMSG_DATA(hdr);
       hdr->cmsg_len = CMSG_LEN(sizeof(msg_context_t));
       hdr->cmsg_level = SOL_SOCKET;
       hdr->cmsg_type = SCM_RIGHTS;
-      *m = context[i];
-      if (!(hdr = CMSG_NXTHDR(&msg, hdr))) {
-        break;
-      }
+      *m = *fd;
     }
   }
 
   PROP_ERR(nbytes = sendmsg(sock, &msg, options | MSG_NOSIGNAL));
   return nbytes;
 }
-
-// int recv_peer_msg(int sock, peer_request_t *request) {}

@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,7 @@ inline const char *vbufnprintf(char **buf, const char *const buf_end,
                                const char *format, va_list list) {
   if (*buf >= buf_end)
     return NULL;
-  int length = buf_end - *buf;
+  long length = buf_end - *buf;
   int wants = vsnprintf(*buf, length, format, list);
   if (wants == -1)
     perror("vsnprintf");
@@ -39,8 +40,38 @@ const char *bufnprintf(char **restrict buf, const char *restrict const buf_end,
   return ret;
 }
 
+char *tmp_vsprintf(const char *restrict format, va_list list) {
+  static struct {
+    int length;
+    char buf[];
+  } *buffer = NULL;
+  if (buffer == NULL) {
+    int original_size = 64;
+    buffer =
+        calloc(1, sizeof(*buffer) + sizeof(buffer->buf[0]) * original_size);
+    buffer->length = original_size;
+  }
+  int print_length = vsnprintf(buffer->buf, buffer->length, format, list);
+  if (print_length >= buffer->length) {
+    int new_size = buffer->length;
+    while (new_size < print_length)
+      new_size <<= 1;
+    buffer = realloc(buffer, new_size);
+    return tmp_vsprintf(format, list);
+  }
+  return buffer->buf;
+}
+
+char *tmp_sprintf(const char *restrict format, ...) {
+  va_list list;
+  va_start(list, format);
+  auto result = tmp_vsprintf(format, list);
+  va_end(list);
+  return result;
+}
+
 int read_secret_password(char *restrict password, int password_len,
-                         const char *format, ...) {
+                         const char *restrict format, ...) {
   struct termios saved_flags, tmp_flags;
   va_list format_args;
   int tty_detected = isatty(fileno(stdin));
@@ -111,8 +142,9 @@ const char *get_runtime_dir(uid_t(get_target_user)(void)) {
 
 int write_random_data(char *target, int secret_length) {
   log_debug("Writing %i bytes to %p\n", secret_length, target);
-  int random = open("/dev/random", O_CLOEXEC | O_RDONLY);
-  PROP_ERR(random);
+  int random;
+  PROP_ERR(random = open("/dev/random", O_CLOEXEC | O_RDONLY));
+  DEFER({ close(random); });
 
   char *buf = target;
   const char *const buf_end = target + secret_length;

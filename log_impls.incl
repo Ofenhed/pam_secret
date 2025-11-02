@@ -1,4 +1,5 @@
 ADD_LOGGER(trace)
 ADD_LOGGER(debug)
+ADD_LOGGER(info)
 ADD_LOGGER(warning)
 ADD_LOGGER(error)

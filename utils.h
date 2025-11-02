@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 static const int stdin_fd = 0;
@@ -17,16 +18,30 @@ static const int stderr_fd = 2;
 #define STR_LEN(x) (ARR_LEN(x) - 1)
 #define STR_END(x) (x + STR_LEN(x))
 
-#if !(defined(SUDO_BIN) || defined(PKEXEC_BIN))
-#define PKEXEC_BIN "/usr/bin/sudo"
-#endif
-
 #define STRINGIZE(x) #x
 #define STRINGIZE_VALUE_OF(x) STRINGIZE(x)
 
 #define LINESTR1(file, line) file ":" #line
 #define LINESTR(file, line) LINESTR1(file, line)
 #define LINE LINESTR(__FILE__, __LINE__)
+
+#define DEFER_MERGE(a, b) a##b
+#define DEFER_VARNAME(a) DEFER_MERGE(defer_scopevar_, a)
+#ifdef __clang__
+static inline void defer_cleanup(void (^*b)(void)) { (*b)(); }
+#define DEFER(BLOCK)                                                           \
+  __attribute__((cleanup(defer_cleanup))) void (^DEFER_VARNAME(__COUNTER__))(  \
+      void) = ^BLOCK
+#else
+#ifdef __GNUC__
+#define DEFER_FUNCNAME(a) DEFER_MERGE(defer_scopefunc_, a)
+#define DEFER(BLOCK)                                                           \
+  void DEFER_FUNCNAME(__LINE__)(__attribute__((unused)) int *a) BLOCK;         \
+  __attribute__((cleanup(DEFER_FUNCNAME(__LINE__)))) int DEFER_VARNAME(__LINE__)
+#else
+#error "This code uses __attribute__((cleanup)) specified for GCC or clang"
+#endif
+#endif
 
 #define CRITICAL_ERR(x)                                                        \
   {                                                                            \
@@ -59,25 +74,19 @@ static const int stderr_fd = 2;
 #define DEBUG_PROP_ERR(x) (x)
 #endif
 
-#ifdef SUDO_BIN
-#define AS_USER_BIN SUDO_BIN
-#define AS_USER(user) AS_USER_BIN, "-u", user, "--"
-#else
-#ifdef PKEXEC_BIN
-#define AS_USER_BIN PKEXEC_BIN
-#define AS_USER(user) AS_USER_BIN, "--user", user
-#else
-#error "Unreachable?"
-#endif
-#endif
-
 static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
 
 const char *vbufnprintf(char **restrict buf, const char *restrict const buf_end,
                         const char *restrict format, va_list list);
-const char *bufnprintf(char **buf, const char *const buf_end,
-                       const char *format, ...);
+__attribute__((format(printf, 3, 4))) const char *
+bufnprintf(char **buf, const char *const buf_end, const char *format, ...);
+// Create a string that is valid until the next time this function is called.
+// Not thread safe!
+__attribute__((format(printf, 1, 2))) char *
+tmp_sprintf(const char *restrict format, ...);
+char *tmp_vsprintf(const char *restrict format, va_list list);
+
 int read_secret_password(char *restrict password, int password_len,
                          const char *restrict format, ...);
 
@@ -85,7 +94,7 @@ int add_arg(const char ***args, const char *const *const args_end,
             const char *arg);
 const char *get_runtime_dir(uid_t(get_target_user)(void));
 
-inline static int inherit_fd(int fd) {
+__attribute__((fd_arg(1))) inline static int inherit_fd(int fd) {
   // return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);
   // return fd;
   int new_fd = dup(fd);
@@ -93,7 +102,7 @@ inline static int inherit_fd(int fd) {
   return new_fd;
 }
 
-inline static int inherit_fd_as(int fd, int fd2) {
+__attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd, int fd2) {
   int new_fd = inherit_fd(fd);
   PROP_ERR(new_fd);
   if (new_fd != fd2) {
@@ -107,11 +116,12 @@ inline static int inherit_fd_as(int fd, int fd2) {
 }
 
 int write_random_data(char *target, int secret_length);
-void *__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
-                  int flags, int fd, __off_t offset);
+__attribute__((malloc, malloc(munmap, 1))) void *
+__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
+            int flags, int fd, __off_t offset);
 #define crit_mmap(ADDR, LEN, PROT, FLAGS, FD, OFFSET)                          \
   __crit_mmap(LINE, ADDR, LEN, PROT, FLAGS, FD, OFFSET)
 
-void *__memfd_secret_alloc(int size);
+__attribute__((malloc, malloc(munmap, 1))) void *__memfd_secret_alloc(int size);
 #define crit_memfd_secret_alloc(PTR) (PTR = __memfd_secret_alloc(sizeof(*PTR)))
 #define crit_munmap(PTR) PROP_CRIT(munmap(PTR, sizeof(*PTR)))

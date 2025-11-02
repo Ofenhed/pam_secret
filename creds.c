@@ -2,6 +2,7 @@
 #include "extern.h"
 #include "hash.h"
 #include "log.h"
+#include "path.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -91,9 +92,9 @@ int set_memfd_random(int fd, int len) {
     perror("Could not map memory");
     return -1;
   }
+  DEFER({ munmap(target, len); });
   int result;
   PROP_ERR(result = write_random_data(target, len));
-  PROP_ERR(munmap(target, len));
   return result;
 }
 
@@ -135,16 +136,15 @@ int xor_secret_data_fd(int source_fd, int destination_fd) {
       mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED, source_fd, 0);
   if (source == MAP_FAILED)
     return -1;
+  DEFER({ munmap(source, sizeof(*source)); });
   PROP_ERR(ftruncate(destination_fd, sizeof(secret_state_t)));
   dest = mmap(NULL, sizeof(secret_state_t), PROT_WRITE, MAP_SHARED,
               destination_fd, 0);
   if (dest == MAP_FAILED) {
-    munmap(source, SECRET_LEN);
     return -1;
   }
+  DEFER({ munmap(dest, sizeof(*dest)); });
   PROP_ERR(xor_secret_data(source, dest));
-  munmap(source, sizeof(secret_state_t));
-  munmap(dest, sizeof(secret_state_t));
   return 0;
 }
 
@@ -177,6 +177,29 @@ int get_persistent_storage_fd() {
   return storage;
 }
 
+int get_persistent_secret_path_fd(uid_t user) {
+  static int secret_path_fd = -1;
+  static uid_t fd_user = INT_MAX;
+  if (secret_path_fd == -1 || fd_user != user) {
+    if (secret_path_fd != -1)
+      close(secret_path_fd);
+    secret_path_fd = -1;
+    int storage;
+    PROP_ERR(storage = get_persistent_storage_fd());
+    fd_user = user;
+    secret_path_fd = openat(storage, get_persistent_secret_filename(user),
+                            O_PATH | O_CLOEXEC, 0);
+  }
+  return secret_path_fd;
+}
+
+int open_persistent_secret_fd(uid_t user) {
+  int secret_path_fd = get_persistent_secret_path_fd(user);
+  int fd = openat(get_proc_self_fds_fd(), tmp_sprintf("%i", secret_path_fd),
+                  O_RDONLY | O_CLOEXEC, 0);
+  return fd;
+}
+
 int get_persistent_secret_fd(uid_t user) {
   static int secret_fd = -1;
   static int fd_user = -1;
@@ -184,11 +207,7 @@ int get_persistent_secret_fd(uid_t user) {
     if (secret_fd != -1) {
       close(secret_fd);
     }
-    int storage;
-    PROP_ERR(storage = get_persistent_storage_fd());
-    fd_user = user;
-    secret_fd =
-        openat(storage, get_persistent_secret_filename(user), O_RDONLY, 0);
+    secret_fd = open_persistent_secret_fd(user);
   }
   return secret_fd;
 }
@@ -283,58 +302,48 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
     return 0;
   } else {
     DEBUG_PROP_ERR(close(password_pipe[rx]));
+    int password_pipe_tx = password_pipe[tx];
+    DEFER({ close(password_pipe_tx); });
     if (params.input_is_fd) {
       secret_pipe[tx] = -1;
     } else {
       DEBUG_PROP_ERR(close(secret_pipe[rx]));
     }
+    int secret_pipe_tx = secret_pipe[tx];
+    DEFER({
+      if (!params.input_is_fd)
+        close(secret_pipe_tx);
+    });
     DEBUG_PROP_ERR(close(result_pipe[tx]));
-#define CLOSE_NO_ERR(x)                                                        \
-  {                                                                            \
-    if (x != -1) {                                                             \
-      close(x);                                                                \
-      x = -1;                                                                  \
-    }                                                                          \
-  }
-#define CLOSE_PIPES                                                            \
-  {                                                                            \
-    CLOSE_NO_ERR(password_pipe[tx]);                                           \
-    CLOSE_NO_ERR(secret_pipe[tx]);                                             \
-    CLOSE_NO_ERR(result_pipe[rx]);                                             \
-  }
+    int result_pipe_rx = result_pipe[rx];
+    DEFER({
+      if (result_pipe_rx != -1)
+        close(result_pipe_rx);
+    });
     int epollfd;
-    PROP_ERR_WITH(epollfd = epoll_create1(O_CLOEXEC), CLOSE_PIPES);
-#define CLOSE_EPOLL                                                            \
-  {                                                                            \
-    close(epollfd);                                                            \
-    CLOSE_PIPES                                                                \
-  }
-#define PROP_ERR_H(x)                                                          \
-  PROP_ERR_WITH(x, {                                                           \
-    perror("Failed at " LINE);                                                 \
-    CLOSE_EPOLL                                                                \
-  })
+    PROP_ERR(epollfd = epoll_create1(O_CLOEXEC));
+    DEFER({ close(epollfd); });
     int saved_len = 0;
     struct epoll_event ev;
     ev.events = EPOLLOUT;
     if (!params.input_is_fd) {
-      ev.data.fd = secret_pipe[tx];
-      PROP_ERR_H(epoll_ctl(epollfd, EPOLL_CTL_ADD, secret_pipe[tx], &ev));
+      ev.data.fd = secret_pipe_tx;
+      PROP_ERR(epoll_ctl(epollfd, EPOLL_CTL_ADD, secret_pipe_tx, &ev));
     }
-    ev.data.fd = password_pipe[tx];
-    PROP_ERR_H(epoll_ctl(epollfd, EPOLL_CTL_ADD, password_pipe[tx], &ev));
+    ev.data.fd = password_pipe_tx;
+    PROP_ERR(epoll_ctl(epollfd, EPOLL_CTL_ADD, password_pipe_tx, &ev));
     ev.events = EPOLLIN;
-    ev.data.fd = result_pipe[rx];
-    PROP_ERR_H(epoll_ctl(epollfd, EPOLL_CTL_ADD, result_pipe[rx], &ev));
-    const int page_size = sysconf(_SC_PAGE_SIZE);
+    ev.data.fd = result_pipe_rx;
+    PROP_ERR(epoll_ctl(epollfd, EPOLL_CTL_ADD, result_pipe_rx, &ev));
+    const long page_size = sysconf(_SC_PAGE_SIZE);
     while (true) {
       struct epoll_event events[5];
       int nfds, c;
-      PROP_ERR_H(nfds = epoll_wait(epollfd, events, ARR_LEN(events), -1));
+      PROP_ERR(nfds = epoll_wait(epollfd, events, ARR_LEN(events), -1));
       for (int n = 0; n < nfds; ++n) {
         int is_secret_pipe =
-            !params.input_is_fd && events[n].data.fd == secret_pipe[tx];
-        if (is_secret_pipe || events[n].data.fd == password_pipe[tx]) {
+            !params.input_is_fd && events[n].data.fd == secret_pipe_tx;
+        if (is_secret_pipe || events[n].data.fd == password_pipe_tx) {
           const unsigned char **source;
           int *source_len;
           if (is_secret_pipe) {
@@ -344,7 +353,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
             source = &user_password;
             source_len = &user_password_len;
           }
-          PROP_ERR_H(c = write(events[n].data.fd, *source, *source_len));
+          PROP_ERR(c = write(events[n].data.fd, *source, *source_len));
           if (c == 0) {
             log_debug("Could not write complete buffer");
             return -1;
@@ -352,53 +361,44 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
           (*source) += c;
           (*source_len) -= c;
           if (*source_len == 0) {
-            PROP_ERR_H(epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd,
-                                 &events[n]));
+            PROP_ERR(epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd,
+                               &events[n]));
             close(events[n].data.fd);
             if (is_secret_pipe) {
-              secret_pipe[tx] = -1;
+              secret_pipe_tx = -1;
             } else {
-              password_pipe[tx] = -1;
+              password_pipe_tx = -1;
             }
           }
-        } else if (events[n].data.fd == result_pipe[rx]) {
+        } else if (events[n].data.fd == result_pipe_rx) {
           int saved_page_offset = saved_len & (page_size - 1);
           if (saved_page_offset == 0) {
-            PROP_ERR_H(ftruncate(out_secret_fd,
-                                 saved_len - saved_page_offset + page_size));
+            PROP_ERR(ftruncate(out_secret_fd,
+                               saved_len - saved_page_offset + page_size));
           }
           char *output =
               mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED,
                    out_secret_fd, saved_len - saved_page_offset);
-#define PROP_ERR_M(x)                                                          \
-  PROP_ERR_WITH(x, {                                                           \
-    munmap(output, page_size);                                                 \
-    CLOSE_EPOLL                                                                \
-  })
           if (output == MAP_FAILED) {
             perror("Could not map output");
-            PROP_ERR_H(-1)
+            PROP_ERR(-1)
             return -1;
           }
-          PROP_ERR_M(c = read(result_pipe[rx], output + saved_page_offset,
-                              page_size - saved_page_offset));
-          PROP_ERR_H(munmap(output, page_size));
+          DEFER({ munmap(output, page_size); });
+          PROP_ERR(c = read(result_pipe_rx, output + saved_page_offset,
+                            page_size - saved_page_offset));
           saved_len += c;
           if (c == 0) {
             int wstatus;
-            close(result_pipe[rx]);
             waitpid(child_pid, &wstatus, 0);
             if (!WIFEXITED(wstatus)) {
               perror("Child process scrypt crashed");
-              CLOSE_EPOLL;
               return -1;
             } else if (WEXITSTATUS(wstatus) != 0) {
-              CLOSE_EPOLL;
               errno = EACCES;
               return -1;
             } else {
               ftruncate(out_secret_fd, saved_len);
-              CLOSE_EPOLL
               return saved_len;
             }
           }
@@ -406,8 +406,6 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
       }
     }
   }
-#undef PROP_ERR_H
-#undef PROP_ERR_M
   return -1;
 }
 
@@ -416,14 +414,14 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   int output_fd, wd;
   PROP_ERR(wd = get_persistent_storage_fd());
   PROP_ERR(output_fd = openat(wd, ".", O_TMPFILE | O_WRONLY, 0400));
+  DEFER({ close(output_fd); });
   int r, w;
-#define PROP_ERR_L(x) PROP_ERR_WITH(x, close(output_fd);)
   char buf[4096];
   while ((r = read(source_fd, buf, ARR_LEN(buf))) > 0) {
     char *out_ptr = buf;
     const char *const out_end = buf + r;
     while (out_ptr < out_end) {
-      PROP_ERR_L(w = write(output_fd, out_ptr, out_end - out_ptr));
+      PROP_ERR(w = write(output_fd, out_ptr, out_end - out_ptr));
       out_ptr += w;
       if (w == 0) {
         errno = ENOSPC;
@@ -431,7 +429,7 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
       }
     }
   }
-  PROP_ERR_L(r);
+  PROP_ERR(r);
   char printf_buf[256];
   char *printf_ptr = printf_buf;
   const char *const printf_end = ARR_END(printf_buf);
@@ -444,27 +442,35 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   const char *memfile_path =
       bufnprintf(&printf_ptr, printf_end, "/proc/self/fd/%i", output_fd);
   assert(tmpfile != NULL && memfile_path != NULL);
-  PROP_ERR_L(linkat(AT_FDCWD, memfile_path, wd, tmpfile, AT_SYMLINK_FOLLOW));
-#undef PROP_ERR_L
-  fchown(output_fd, user, manager_group());
-  close(output_fd);
+  PROP_ERR(linkat(AT_FDCWD, memfile_path, wd, tmpfile, AT_SYMLINK_FOLLOW));
+  // TODO: The problem is that the detection of an existing file fails, so it
+  // tries to create a new file instead of replacing the existing file. Not sure
+  // why it fails, though.
+  DEFER({ unlinkat(wd, tmpfile, 0); });
+  gid_t group = manager_group();
+  fchown(output_fd, user, group);
   if (!allow_create) {
-    if (faccessat(wd, newfile, R_OK, 0) != 0) {
+    if (faccessat(wd, newfile, F_OK, 0) == 0) {
+      perror("Unable to create new credential");
       return -1;
     }
   }
+  log_trace("Overwriting old credential file");
   PROP_ERR(renameat(wd, tmpfile, wd, newfile));
-  fchownat(wd, newfile, user, manager_group(), 0);
+  log_trace("Attempting to change owner to %i:%i\n", user, group);
+  fchownat(wd, newfile, user, group, 0);
   return 0;
 }
 
 void hashed_user_cred(const unsigned char *user_password, int user_password_len,
                       sha256_hash_t *output) {
   secret_state_t *system_secret =
-      crit_mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED,
+      crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
                 get_system_secret_fd(), 0);
+  DEFER({ munmap(system_secret, sizeof(*system_secret)); });
   hash_state_t *hash_state;
   crit_memfd_secret_alloc(hash_state);
+  DEFER({ munmap(hash_state, sizeof(*hash_state)); });
   hmac(hash_state, HASH_TYPE_STORAGE_ENCRYPTION_KEY,
        STR_LEN(HASH_TYPE_STORAGE_ENCRYPTION_KEY), user_password,
        user_password_len);
@@ -483,6 +489,7 @@ int pam_translated_user_auth_token(const unsigned char *user_password,
 
   hash_state_t *auth_token_generator;
   crit_memfd_secret_alloc(auth_token_generator);
+  DEFER({ munmap(auth_token_generator, sizeof(*auth_token_generator)); });
   hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
        STR_LEN(HASH_TYPE_USER_PASSWORD), user_password, user_password_len);
   hmac_msg(auth_token_generator, *session, sizeof(*session));
@@ -490,10 +497,9 @@ int pam_translated_user_auth_token(const unsigned char *user_password,
   secret_state_t *system_secret =
       crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
                 get_system_secret_fd(), 0);
+  DEFER({ munmap(system_secret, sizeof(*system_secret)); });
   hmac_msg(auth_token_generator, *system_secret, sizeof(*system_secret));
-  crit_munmap(system_secret);
   hmac_finalize(auth_token_generator, output);
-  crit_munmap(auth_token_generator);
   return 0;
 }
 
@@ -507,27 +513,32 @@ int create_user_persistent_cred_secret(int secret_fd,
     PROP_ERR(ftruncate(secret_fd, sizeof(secret_state_t)));
     PROP_ERR(set_memfd_random(secret_fd, sizeof(secret_state_t)));
   }
+  DEFER({
+    if (new_secret && session_secret_fd != secret_fd)
+      close(secret_fd);
+  });
   secret_state_t *secret_ptr =
       crit_mmap(0, sizeof(secret_state_t), PROT_READ, MAP_SHARED, secret_fd, 0);
+  DEFER({ munmap(secret_ptr, sizeof(*secret_ptr)); });
   scrypt_action_t action = set_scrypt_input_data(
       default_persistent_args(), *secret_ptr, sizeof(secret_state_t));
   int persistent_len;
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
+  DEFER({ munmap(user_password_hash, sizeof(*user_password_hash)); });
   hashed_user_cred(user_password, user_password_len, user_password_hash);
   persistent_len = scrypt_into_fd(action, (unsigned char *)user_password_hash,
                                   sizeof(*user_password_hash), persistent_fd);
-  crit_munmap(secret_ptr);
-  crit_munmap(user_password_hash);
   if (persistent_len == -1) {
-    if (new_secret)
-      close(secret_fd);
     return -1;
   }
   if (session_secret_fd != -1) {
-    log_error("Generated new secret despite already having a secret");
+      close(session_secret_fd);
+      if (new_secret) {
+        log_error("Generated new secret despite already having a secret");
+      }
   } else {
-    session_secret_fd = secret_fd;
+    session_secret_fd = dup(secret_fd);
   }
   return persistent_len;
 }
@@ -563,9 +574,8 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   uid_t user = geteuid();
   int storage_fd, persistent_fd, secret_fd, masked_fd, protected_fd;
   PROP_ERR(storage_fd = get_persistent_storage_fd());
-  PROP_ERR(persistent_fd =
-               openat(storage_fd, get_persistent_secret_filename(user),
-                      O_CLOEXEC | O_RDONLY));
+  PROP_ERR(persistent_fd = get_persistent_secret_fd(user));
+  lseek(persistent_fd, SEEK_SET, 0);
 
   scrypt_action_t action = {0};
   action.op = DECRYPT;
@@ -574,12 +584,15 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   crit_memfd_secret_alloc(user_password_hash);
   hashed_user_cred(user_password, user_password_len, user_password_hash);
   PROP_CRIT(secret_fd = memfd_secret(O_CLOEXEC));
+  DEFER({
+    if (secret_fd != session_secret_fd) {
+      close(secret_fd);
+    }
+  });
   int secret_len = scrypt_into_fd(action, (unsigned char *)user_password_hash,
                                   sizeof(*user_password_hash), secret_fd);
-  close(persistent_fd);
   if (secret_len != sizeof(secret_state_t)) {
     fprintf(stderr, "Invalid secret length %i\n", secret_len);
-    close(secret_fd);
     return -1;
   }
   if (session_secret_fd != -1) {
@@ -590,22 +603,26 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   PROP_ERR(masked_fd = memfd_secret(O_CLOEXEC));
   PROP_ERR(xor_secret_data_fd(secret_fd, masked_fd));
   secret_state_t *mapped =
-      mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED, masked_fd, 0);
+      mmap(NULL, sizeof(*mapped), PROT_READ, MAP_SHARED, masked_fd, 0);
   close(masked_fd);
   if (mapped == MAP_FAILED) {
     perror("Could not map masked");
     return -1;
   }
+  DEFER({ munmap(mapped, sizeof(*mapped)); });
   action = set_scrypt_input_data(default_session_args(), *mapped,
                                  sizeof(secret_state_t));
   PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
+  DEFER({
+    if (protected_fd != session_encrypted_fd)
+      close(protected_fd);
+  });
   int protected_len =
       scrypt_into_fd(action, (unsigned char *)user_password_hash,
                      sizeof(*user_password_hash), protected_fd);
   crit_munmap(mapped);
   if (protected_len == -1) {
     perror("Could not read into protected");
-    close(protected_fd);
     return -1;
   }
   if (session_encrypted_fd != -1) {
@@ -634,6 +651,7 @@ int unlock_plain_user_secret(const unsigned char *user_password,
     perror("Could not map encrypted data");
     return -1;
   }
+  DEFER({ munmap(encrypted_data, session_encrypted_data_len); });
   scrypt_action_t action = {0};
   action =
       set_scrypt_input_data(action, encrypted_data, session_encrypted_data_len);
@@ -642,17 +660,15 @@ int unlock_plain_user_secret(const unsigned char *user_password,
   crit_memfd_secret_alloc(user_password_hash);
   hashed_user_cred(user_password, user_password_len, user_password_hash);
   PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
+  DEFER({ close(protected_fd); });
   int decrypt = scrypt_into_fd(action, (unsigned char *)user_password_hash,
                                sizeof(*user_password_hash), protected_fd);
-  munmap(encrypted_data, session_encrypted_data_len);
   if (decrypt != sizeof(secret_state_t)) {
-    close(protected_fd);
     perror("Could not decrypt");
     return -1;
   }
   PROP_ERR(secret_fd = memfd_secret(O_CLOEXEC));
   PROP_ERR(xor_secret_data_fd(protected_fd, secret_fd));
-  close(protected_fd);
   if (session_secret_fd != -1) {
     close(session_secret_fd);
   }

@@ -128,8 +128,8 @@ static int daemon_socket(int open) {
         flog_debug(flog, "Launching daemon");
         uid_t target_user = pam_get_user_uid();
         gid_t target_group = manager_group();
-        setregid(target_group, target_group);
-        setreuid(target_user, target_user);
+        setresgid(target_group, target_group, target_group);
+        setresuid(target_user, target_user, target_user);
         char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
         dup2(logger, stdout_fd);
         dup2(logger, stderr_fd);
@@ -184,10 +184,10 @@ static int read_auth_token(pam_handle_t *pamh, int auth_token, int secret_fd) {
     unsigned char *msg_mem;
     msg_mem =
         crit_mmap(NULL, auth_token_len, PROT_WRITE, MAP_SHARED, secret_fd, 0);
+    DEFER({ munmap(msg_mem, auth_token_len); });
 
     flog_trace(flog, "Copying password of length %zu\n", auth_token_len);
     memcpy(msg_mem, p_auth_token, auth_token_len);
-    munmap(msg_mem, auth_token_len);
   }
   return auth_token_len;
 }
@@ -197,12 +197,13 @@ static int transform_auth_token(pam_handle_t *pamh, int pam_item_id,
   sha256_hash_t *new_user_cred_raw;
   if ((new_user_cred_raw = mmap(NULL, sizeof(*new_user_cred_raw), PROT_READ,
                                 MAP_SHARED, auth_token, 0)) != MAP_FAILED) {
+    DEFER({ munmap(new_user_cred_raw, sizeof(*new_user_cred_raw)); });
     sha256_hash_hex_t *new_user_cred;
     crit_memfd_secret_alloc(new_user_cred);
+    DEFER({ munmap(new_user_cred, sizeof(*new_user_cred)); });
     *new_user_cred = hash_to_hex(new_user_cred_raw);
     flog_debug(flogger(), "Setting authentication token %s",
                new_user_cred->printable);
-    munmap(new_user_cred_raw, sizeof(*new_user_cred_raw));
     pam_set_item(pamh, pam_item_id, new_user_cred->printable);
     return PAM_SUCCESS;
   }
@@ -238,6 +239,7 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
   if (auth_token_fd == -1) {
     return PAM_BUF_ERR;
   }
+  DEFER({ close(auth_token_fd); });
   int auth_token_len = read_auth_token(pamh, auth_token, auth_token_fd);
   if (auth_token_len == -1) {
     fprintf(flog, "Could not read auth token\n");
@@ -249,16 +251,22 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
   }
 
   msg_info_t msg;
-  msg_context_t context[2] = {{{auth_token_fd}}};
   msg.kind = MSG_AUTHENTICATE;
   msg.data_len = auth_token_len;
-  if (send_peer_msg(sock, msg, context, 1, 0) == -1) {
+  if (send_peer_msg(sock, msg, &auth_token_fd, 0) == -1) {
+    perror("Could not send message to daemon");
     return PAM_SERVICE_ERR;
   }
 
   while (true) {
-    int len = recv_peer_msg(sock, &msg, context);
+    int msg_fd;
+    int len = recv_peer_msg(sock, &msg, &msg_fd);
+    DEFER({
+      if (msg_fd != -1)
+        close(msg_fd);
+    });
     if (len == -1 || len == 0) {
+      perror("Could not receive message from daemon");
       return PAM_SERVICE_ERR;
     }
     flog_debug(flog, "Got message %i", msg.kind);
@@ -266,9 +274,8 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
     if (msg.kind == MSG_AUTHENTICATED) {
       flog_debug(flog, "Authentication successful");
       if (args->translate_authtok) {
-        transform_auth_token(pamh, auth_token, context[0].fd);
+        transform_auth_token(pamh, auth_token, msg_fd);
       }
-      close(context[0].fd);
       return PAM_SUCCESS;
     } else if (msg.kind == MSG_NOT_AUTHENTICATED) {
       flog_warning(flog, "Authentication failed");
@@ -306,11 +313,14 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
                 auto_install);
       int secret_fd = memfd_secret(O_CLOEXEC);
       if (secret_fd == -1) {
+        log_error("Could not create memfd secret");
         daemon_socket(0);
         return PAM_BUF_ERR;
       }
+      DEFER({ close(secret_fd); });
       int secret_len;
       if ((secret_len = read_auth_token(pamh, PAM_AUTHTOK, secret_fd)) == -1) {
+        log_error("Could not read auth token");
         daemon_socket(0);
         return PAM_CRED_INSUFFICIENT;
       }
@@ -319,22 +329,28 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
         return PAM_CRED_INSUFFICIENT;
       }
       msg_info_t msg;
-      msg_context_t context[2] = {{{secret_fd}}};
       msg.data_len = secret_len;
       msg.kind = MSG_UPDATE_PASSWORD;
-      if (send_peer_msg(sock, msg, context, 1, 0) == -1) {
+      if (send_peer_msg(sock, msg, &secret_fd, 0) == -1) {
+        log_error("Could not send message to daemon");
         daemon_socket(0);
         return PAM_SERVICE_ERR;
       }
       while (true) {
-        int len = recv_peer_msg(sock, &msg, context);
+        int msg_fd;
+        int len = recv_peer_msg(sock, &msg, &msg_fd);
+        DEFER({
+          if (msg_fd != -1)
+            close(msg_fd);
+        });
         if (len == -1 || len == 0) {
+          log_error("Could not receive message from daemon");
           daemon_socket(0);
           return PAM_SERVICE_ERR;
         }
         if (msg.kind == MSG_UPDATE_PASSWORD_SUCCESS) {
           flog_debug(flog, "Password change success");
-          transform_auth_token(pamh, PAM_AUTHTOK, context[0].fd);
+          transform_auth_token(pamh, PAM_AUTHTOK, msg_fd);
           daemon_socket(0);
           return PAM_SUCCESS;
         } else if (msg.kind == MSG_UNKNOWN_ERROR ||
@@ -397,10 +413,10 @@ EXPORTED PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
   parsed_args args;
   parse_args(argc, argv, &args);
   int tmp;
+  DEFER({ daemon_socket(0); });
   if ((tmp = pam_save_user_uid(pamh)) != PAM_SUCCESS) {
     return tmp;
   }
   int ret = do_authenticate(pamh, PAM_AUTHTOK, flags, &args);
-  daemon_socket(0);
   return ret;
 }

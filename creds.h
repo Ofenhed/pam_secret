@@ -1,6 +1,8 @@
 #pragma once
 
 #include "hash.h"
+#include <stdbool.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -10,6 +12,8 @@ const char *get_persistent_storage_location();
 const char *get_system_secret_filename();
 int get_persistent_storage_fd();
 int get_persistent_secret_fd(uid_t user);
+int open_persistent_secret_fd(uid_t user);
+int get_persistent_secret_path_fd(uid_t user);
 int get_session_secret_fd();
 int get_system_secret_fd();
 const char *get_persistent_secret_filename(uid_t user);
@@ -66,13 +70,15 @@ typedef struct {
   };
 } scrypt_action_t;
 
-secret_state_t *map_session_cred();
-int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
-                   int user_password_len, int out_secret_fd);
+__attribute__((malloc(munmap, 1))) secret_state_t *map_session_cred();
+__attribute__((fd_arg_write(4))) int
+scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
+               int user_password_len, int out_secret_fd);
 scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
                                       const unsigned char *secret,
                                       int secret_len);
-scrypt_action_t set_scrypt_input_fd(scrypt_action_t params, int fd);
+__attribute__((fd_arg_read(2))) scrypt_action_t
+set_scrypt_input_fd(scrypt_action_t params, int fd);
 int authenticate_user(const unsigned char *password, int password_len);
 int lock_plain_user_secret();
 

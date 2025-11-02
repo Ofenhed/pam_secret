@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 typedef struct {
   enum {
     MSG_INVALID = -1,
@@ -38,11 +39,14 @@ inline static msg_context_t fd_to_context(int fd) {
   return c;
 }
 
-int msg_content_length(msg_info_t kind);
+int msg_has_fd(msg_info_t kind);
 
-int recv_peer_msg(int sock, msg_info_t *info, msg_context_t data[2]);
-int send_peer_msg(int sock, msg_info_t info, msg_context_t context[],
-                  int context_len, int options);
+#ifndef _Nullable
+#define _Nullable
+#endif
+
+int recv_peer_msg(int sock, msg_info_t *info, int *_Nullable fd);
+int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options);
 
 const char *get_socket_dir();
 const char *get_socket_name();
