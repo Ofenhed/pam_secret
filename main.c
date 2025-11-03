@@ -214,7 +214,8 @@ EXPORTED int libpam_secret_exported_main(int argc, char **argv) {
           char buf[32];
           close(socket_up_indicator[PIPE_TX]);
           read(socket_up_indicator[PIPE_RX], buf, ARR_LEN(buf));
-          exit(EXIT_SUCCESS);
+          close(socket_up_indicator[PIPE_RX]);
+          continue;
         }
         PROP_ERR(setsid());
         signal(SIGHUP, SIG_IGN);

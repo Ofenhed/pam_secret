@@ -64,15 +64,14 @@ EXPORTED PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
   return PAM_SUCCESS;
 }
 
-static int logger = stderr_fd;
 static FILE *flogger() {
   static FILE *flog = NULL;
   static int have_log = -1;
+  int logger = get_default_log_output();
   if (have_log != logger) {
     if (flog != NULL) {
       fclose(flog);
     }
-    set_default_log_output(logger);
     if ((flog = fdopen(logger, "w"))) {
       have_log = logger;
     }
@@ -98,17 +97,17 @@ static int pam_save_user_uid(pam_handle_t *pamh) {
   struct group *group = getgrnam(manager_group_name());
   if (group == NULL) {
     errno = ENOENT;
-    flog_error(flog, "Could not find group %s", manager_group_name());
+    log_error("Could not find group %s", manager_group_name());
     return PAM_SYSTEM_ERR;
   }
   char **group_member = group->gr_mem;
   while (*group_member != NULL &&
          strcmp(*group_member, userPwd->pw_name) != 0) {
-    flog_debug(flog, "%s is member", *group_member);
+    log_debug("%s is member", *group_member);
     ++group_member;
   }
   if (*group_member == NULL) {
-    flog_debug(flog, "Not member of pam_secret group");
+    log_debug("Not member of pam_secret group");
     return PAM_IGNORE;
   }
 
@@ -120,46 +119,46 @@ static uid_t pam_get_user_uid(void) { return __pam_secret_saved_user_uid; }
 static int daemon_socket(int open) {
   static int sock = -1;
   if (sock == -1 && open) {
-    auto flog = flogger();
+    flogger();
     if ((sock = connect_daemon(pam_get_user_uid)) == -1) {
       int child_pid;
-      flog_trace(flog, "Forking");
+      log_trace("Forking");
       if ((child_pid = fork()) == -1) {
-        flog_error(flog, "Could not fork daemon");
+        log_error("Could not fork daemon");
         return -1;
       } else if (child_pid == 0) {
-        flog_debug(flog, "Launching daemon");
+        log_debug("Launching daemon");
         uid_t target_user = pam_get_user_uid();
         gid_t target_group = manager_group();
         setresgid(target_group, target_group, target_group);
         setresuid(target_user, target_user, target_user);
         char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
+        int logger = get_default_log_output();
         dup2(logger, stdout_fd);
         dup2(logger, stderr_fd);
         if (execv(args[0], args) == -1) {
-          flog_error(flog, "Could not execute daemon: %s", strerror(errno));
+          log_error("Could not execute daemon: %s", strerror(errno));
           return -1;
         }
       } else {
         int wstatus;
-        flog_trace(flog, "Waiting for daemon");
+        log_trace("Waiting for daemon");
         waitpid(child_pid, &wstatus, 0);
         if (!WIFEXITED(wstatus)) {
-          flog_error(flog, "Child process scrypt crashed: %s", strerror(errno));
+          log_error("Child process scrypt crashed: %s", strerror(errno));
           return -1;
         } else if (WEXITSTATUS(wstatus) == ENOENT) {
           errno = ENOENT;
           return -1;
         } else if (WEXITSTATUS(wstatus) != 0) {
-          flog_error(flog, "Failed to start daemon");
+          log_error("Failed to start daemon");
           return -1;
         } else {
           if ((sock = connect_daemon(pam_get_user_uid)) == -1) {
-            flog_error(flog, "Could not connect to daemon: %s",
-                       strerror(errno));
+            log_error("Could not connect to daemon: %s", strerror(errno));
             return -1;
           } else {
-            flog_debug(flog, "Connected to daemon");
+            log_debug("Connected to daemon");
           }
         }
       }
@@ -183,8 +182,7 @@ static int read_auth_token(pam_handle_t *pamh, int auth_token, int secret_fd) {
   }
   const size_t auth_token_len = strlen(p_auth_token);
 
-  flog_trace(flog, "Truncating shared memory location to %zu bytes",
-             auth_token_len);
+  log_trace("Truncating shared memory location to %zu bytes", auth_token_len);
   PROP_CRIT(ftruncate(secret_fd, auth_token_len));
   if (auth_token_len > 0) {
     unsigned char *msg_mem;
@@ -192,7 +190,7 @@ static int read_auth_token(pam_handle_t *pamh, int auth_token, int secret_fd) {
         crit_mmap(NULL, auth_token_len, PROT_WRITE, MAP_SHARED, secret_fd, 0);
     DEFER({ munmap(msg_mem, auth_token_len); });
 
-    flog_trace(flog, "Copying password of length %zu\n", auth_token_len);
+    log_trace("Copying password of length %zu\n", auth_token_len);
     memcpy(msg_mem, p_auth_token, auth_token_len);
   }
   return auth_token_len;
@@ -208,18 +206,14 @@ static int transform_auth_token(pam_handle_t *pamh, int pam_item_id,
     crit_memfd_secret_alloc(new_user_cred);
     DEFER({ munmap(new_user_cred, sizeof(*new_user_cred)); });
     *new_user_cred = hash_to_hex(new_user_cred_raw);
-    flog_debug(flogger(), "Setting authentication token %s",
-               new_user_cred->printable);
+    log_debug("Setting authentication token %s", new_user_cred->printable);
     pam_set_item(pamh, pam_item_id, new_user_cred->printable);
     return PAM_SUCCESS;
   }
   return PAM_SYSTEM_ERR;
 }
 
-void silence_logger() {
-  logger = open("/dev/null", O_WRONLY);
-  set_default_log_output(logger);
-}
+void silence_logger() { set_default_log_output(open("/dev/null", O_WRONLY)); }
 
 static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
                            parsed_args *args) {
@@ -246,7 +240,7 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
     return PAM_CRED_INSUFFICIENT;
   }
   if (auth_token_len == 0) {
-    flog_error(flog, "Not accepting empty password");
+    log_error("Not accepting empty password");
     return PAM_CRED_INSUFFICIENT;
   }
 
@@ -269,16 +263,16 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
       perror("Could not receive message from daemon");
       return PAM_SERVICE_ERR;
     }
-    flog_debug(flog, "Got message %i", msg.kind);
+    log_debug("Got message %i", msg.kind);
 
     if (msg.kind == MSG_AUTHENTICATED) {
-      flog_debug(flog, "Authentication successful");
+      log_debug("Authentication successful");
       if (args->translate_authtok) {
         transform_auth_token(pamh, auth_token, msg_fd);
       }
       return PAM_SUCCESS;
     } else if (msg.kind == MSG_NOT_AUTHENTICATED) {
-      flog_warning(flog, "Authentication failed");
+      log_warning("Authentication failed");
       return PAM_AUTH_ERR;
     }
   }
@@ -330,7 +324,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
         return PAM_CRED_INSUFFICIENT;
       }
       if (secret_len == 0) {
-        flog_error(flog, "Not accepting empty password");
+        log_error("Not accepting empty password");
         return PAM_CRED_INSUFFICIENT;
       }
       msg_info_t msg;
@@ -354,21 +348,21 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
           return PAM_SERVICE_ERR;
         }
         if (msg.kind == MSG_UPDATE_PASSWORD_SUCCESS) {
-          flog_debug(flog, "Password change success");
+          log_debug("Password change success");
           transform_auth_token(pamh, PAM_AUTHTOK, msg_fd);
           daemon_socket(0);
           return PAM_SUCCESS;
         } else if (msg.kind == MSG_UNKNOWN_ERROR ||
                    msg.kind == MSG_NOT_AUTHENTICATED) {
-          flog_debug(flog, "Password change failed");
+          log_debug("Password change failed");
           daemon_socket(0);
           return PAM_SERVICE_ERR;
         } else {
-          flog_trace(flog, "Got unexpected message %i", msg.kind);
+          log_trace("Got unexpected message %i", msg.kind);
         }
       }
     } else {
-      flog_debug(flog, "Trying to install new auth");
+      log_debug("Trying to install new auth");
       const char *p_auth_token;
 
       int retval = pam_get_authtok(pamh, PAM_AUTHTOK, &p_auth_token, NULL);

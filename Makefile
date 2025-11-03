@@ -6,6 +6,8 @@ pam_lib_dir = /usr/lib64/security
 
 ifdef log_level
 	CFLAGS += -DDEBUG_LEVEL=$(log_level)
+else
+	CFLAGS += -DDEBUG_LEVEL=4
 endif
 
 ifeq ($(CC), clang)

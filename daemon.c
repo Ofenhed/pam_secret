@@ -163,7 +163,7 @@ int run_daemon(const char *name, int socket_not_listening) {
     RESET_BUF_PTR();
     ev.events = EPOLLIN;
     if (!(state_tmp = malloc_peer_state(&ev, persistent_inotify))) {
-      perror("Couldn't allocate inotify state");
+      log_error("Couldn't allocate inotify state: %s", strerror(errno));
       return -1;
     }
     state_tmp->peer_kind = INOTIFY_TRIGGER;
@@ -212,7 +212,7 @@ int run_daemon(const char *name, int socket_not_listening) {
     } else {
       PROP_CRIT(fstat(persistent_secret, &persistent_secret_stat));
       if (!persistent_secret_stat.st_nlink) {
-        log_error("Secret removed, shutting down");
+        log_info("Secret removed, shutting down");
         server_shutdown = true;
       }
     }
@@ -238,7 +238,7 @@ int run_daemon(const char *name, int socket_not_listening) {
           continue;
         } else if ((state_tmp->client_state.cred.uid & ~server_user) ||
                    epoll_ctl(epollfd, EPOLL_CTL_ADD, client, &ev) == -1) {
-          log_error("Invalid user? %i\n", state_tmp->client_state.cred.uid);
+          log_warning("Invalid user? %i\n", state_tmp->client_state.cred.uid);
           free(state_tmp);
           close(client);
           continue;
@@ -257,7 +257,7 @@ int run_daemon(const char *name, int socket_not_listening) {
         while (iev_ptr < iev_end) {
           if (iev_ptr->wd == inotify_run_dir_modified &&
               strcmp(iev_ptr->name, socket_name) == 0) {
-            log_error("They killed my socket file.\nWait for me, buddy...\n");
+            log_info("They killed my socket file.\nWait for me, buddy...\n");
             epoll_ctl(epollfd, EPOLL_CTL_DEL, server, &events[n]);
             close(server);
             server_shutdown = 1;
@@ -299,7 +299,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             }
             break;
           } else {
-            perror("Send failed");
+            log_error("Send failed: %s", strerror(errno));
             break;
           }
         }
@@ -515,7 +515,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             log_debug("Running update with %s\n", update_arg);
             char *args[] = {"/usr/sbin/pam_secret", (char *)update_arg, NULL};
             if (execv(args[0], args) == -1) {
-              perror("Child process execve failed");
+              log_error("Child process execve failed: %s", strerror(errno));
               return -1;
             }
           } else {
@@ -527,7 +527,7 @@ int run_daemon(const char *name, int socket_not_listening) {
               msg_info_t reply = {0};
               reply.kind = MSG_UNKNOWN_ERROR;
               if (!WIFEXITED(wstatus)) {
-                perror("Child process me crashed");
+                log_error("Child process me crashed: %s", strerror(errno));
               } else if (WEXITSTATUS(wstatus) == 0) {
                 reply.kind = MSG_UPDATE_PASSWORD_SUCCESS;
                 b->info = reply;

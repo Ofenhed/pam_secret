@@ -98,6 +98,7 @@ int init_privileged() {
   if ((my_cred = open_persistent_secret_fd(user)) == -1) {
     log_warning("No user credential installed");
   }
+  fchmod(my_cred, 0400);
   DEFER({ close(my_cred); });
   struct stat stats;
   fstat(my_cred, &stats);
