@@ -4,6 +4,10 @@ CFLAGS += -std=c23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wfor
 # CFLAGS += -Wconversion
 pam_lib_dir = /usr/lib64/security
 
+ifdef log_level
+	CFLAGS += -DDEBUG_LEVEL=$(log_level)
+endif
+
 ifeq ($(CC), clang)
 	CFLAGS = -fblocks
 endif

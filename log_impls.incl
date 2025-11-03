@@ -1,8 +1,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-ADD_LOGGER(trace)
-ADD_LOGGER(debug)
-ADD_LOGGER(info)
-ADD_LOGGER(warning)
-ADD_LOGGER(error)
+ADD_LOGGER(trace, 1)
+ADD_LOGGER(debug, 2)
+ADD_LOGGER(info, 3)
+ADD_LOGGER(warning, 4)
+ADD_LOGGER(error, 5)

@@ -3,7 +3,7 @@
 void set_default_log_output(int fd);
 int get_default_log_output(void);
 
-#define ADD_LOGGER(LEVEL)                                                      \
+#define ADD_LOGGER(LEVEL, _IGNORED)                                            \
   void log_##LEVEL(const char *restrict format, ...);                          \
   void vlog_##LEVEL(const char *restrict format, va_list args);                \
   void dlog_##LEVEL(int output, const char *restrict format, ...);             \
