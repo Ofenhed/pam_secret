@@ -27,6 +27,11 @@ int install_new_user_key(int parent_auth_fd, int new_content) {
   struct stat system_secret_stat, auth_token_stat;
   PROP_ERR(fstat(parent_auth_fd, &auth_token_stat));
   PROP_ERR(system_secret_fd = get_system_secret_fd());
+  if (system_secret_fd == parent_auth_fd) {
+    log_error("Clever...");
+    errno = EINVAL;
+    return -1;
+  }
   PROP_ERR(fstat(system_secret_fd, &system_secret_stat));
   log_debug("Checking auth fd");
   if (system_secret_stat.st_dev != auth_token_stat.st_dev ||
