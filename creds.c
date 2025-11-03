@@ -458,11 +458,12 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   return 0;
 }
 
-void hashed_user_cred(const unsigned char *user_password, int user_password_len,
-                      sha256_hash_t *output) {
+int hashed_user_cred(const unsigned char *user_password, int user_password_len,
+                     sha256_hash_t *output) {
+  int fd;
+  PROP_ERR(fd = get_system_secret_fd());
   secret_state_t *system_secret =
-      crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
-                get_system_secret_fd(), 0);
+      crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED, fd, 0);
   DEFER({ munmap(system_secret, sizeof(*system_secret)); });
   hash_state_t *hash_state;
   crit_memfd_secret_alloc(hash_state);
@@ -474,6 +475,7 @@ void hashed_user_cred(const unsigned char *user_password, int user_password_len,
   crit_munmap(system_secret);
   hmac_finalize(hash_state, output);
   crit_munmap(hash_state);
+  return 0;
 }
 
 int pam_translated_user_auth_token(const unsigned char *user_password,
@@ -522,7 +524,8 @@ int create_user_persistent_cred_secret(int secret_fd,
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
   DEFER({ munmap(user_password_hash, sizeof(*user_password_hash)); });
-  hashed_user_cred(user_password, user_password_len, user_password_hash);
+  PROP_ERR(
+      hashed_user_cred(user_password, user_password_len, user_password_hash));
   persistent_len = scrypt_into_fd(action, (unsigned char *)user_password_hash,
                                   sizeof(*user_password_hash), persistent_fd);
   if (persistent_len == -1) {
@@ -578,7 +581,8 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   action = set_scrypt_input_fd(action, persistent_fd);
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
-  hashed_user_cred(user_password, user_password_len, user_password_hash);
+  PROP_ERR(
+      hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_CRIT(secret_fd = memfd_secret(O_CLOEXEC));
   DEFER({
     if (secret_fd != session_secret_fd) {
@@ -654,7 +658,8 @@ int unlock_plain_user_secret(const unsigned char *user_password,
   action.op = DECRYPT;
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
-  hashed_user_cred(user_password, user_password_len, user_password_hash);
+  PROP_ERR(
+      hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
   DEFER({ close(protected_fd); });
   int decrypt = scrypt_into_fd(action, (unsigned char *)user_password_hash,

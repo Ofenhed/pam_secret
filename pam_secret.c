@@ -25,6 +25,7 @@
 typedef struct {
   int auto_install;
   int translate_authtok;
+  int silent;
 } parsed_args;
 
 static int parse_args(int argc, const char **argv, parsed_args *parsed) {
@@ -38,6 +39,8 @@ static int parse_args(int argc, const char **argv, parsed_args *parsed) {
       parsed->auto_install = 1;
     } else if (strcmp("translate_authtok", *argv) == 0) {
       parsed->translate_authtok = 1;
+    } else if (strcmp("silent", *argv) == 0) {
+      parsed->silent = 1;
     } else {
       if (first_parse) {
         log_warning("Unknown argument \"%s\"", *argv);
@@ -144,6 +147,9 @@ static int daemon_socket(int open) {
         if (!WIFEXITED(wstatus)) {
           flog_error(flog, "Child process scrypt crashed: %s", strerror(errno));
           return -1;
+        } else if (WEXITSTATUS(wstatus) == ENOENT) {
+          errno = ENOENT;
+          return -1;
         } else if (WEXITSTATUS(wstatus) != 0) {
           flog_error(flog, "Failed to start daemon");
           return -1;
@@ -210,18 +216,9 @@ static int transform_auth_token(pam_handle_t *pamh, int pam_item_id,
   return PAM_SYSTEM_ERR;
 }
 
-static int setup_logger(int flags) {
-  static int installed_flags = 0;
-  if ((installed_flags ^ flags) & PAM_SILENT) {
-    installed_flags = flags;
-    if (flags & PAM_SILENT) {
-      // logger = open("/dev/null", O_WRONLY);
-      // if (logger == -1) {
-      //   return PAM_SYSTEM_ERR;
-      // }
-    }
-  }
-  return PAM_SUCCESS;
+void silence_logger() {
+  logger = open("/dev/null", O_WRONLY);
+  set_default_log_output(logger);
 }
 
 static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
@@ -234,6 +231,9 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
   }
 
   int sock = daemon_socket(true);
+  if (sock == -1 && errno == ENOENT) {
+    return PAM_IGNORE;
+  }
 
   int auth_token_fd = memfd_secret(O_CLOEXEC);
   if (auth_token_fd == -1) {
@@ -286,14 +286,14 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
 
 EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
                                          int argc, const char **argv) {
-  setup_logger(flags);
+  parsed_args args;
+  parse_args(argc, argv, &args);
+  if (flags & PAM_SILENT || args.silent)
+    silence_logger();
   int tmp;
   if ((tmp = pam_save_user_uid(pamh)) != PAM_SUCCESS) {
     return tmp;
   }
-  parsed_args args;
-  parse_args(argc, argv, &args);
-  int sock = daemon_socket(true);
   FILE *flog = flogger();
   static int authentication_result = PAM_AUTH_ERR;
   int has_persistent_secret =
@@ -307,8 +307,13 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
     return authentication_result =
                do_authenticate(pamh, PAM_OLDAUTHTOK, flags, &args);
   } else if (flags & PAM_UPDATE_AUTHTOK &&
-             authentication_result == PAM_SUCCESS) {
+             (authentication_result == PAM_SUCCESS ||
+              authentication_result == PAM_IGNORE)) {
     if (has_persistent_secret) {
+      int sock = daemon_socket(true);
+      if (sock == -1 && errno == ENOENT) {
+        return PAM_IGNORE;
+      }
       log_debug("Trying to install new auth token, auto install is %i",
                 auto_install);
       int secret_fd = memfd_secret(O_CLOEXEC);
@@ -409,14 +414,14 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
 /* expected hook, this is where custom stuff happens */
 EXPORTED PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
                                             int argc, const char **argv) {
-  setup_logger(flags);
   parsed_args args;
   parse_args(argc, argv, &args);
+  if (flags & PAM_SILENT || args.silent)
+    silence_logger();
   int tmp;
   DEFER({ daemon_socket(0); });
   if ((tmp = pam_save_user_uid(pamh)) != PAM_SUCCESS) {
     return tmp;
   }
-  int ret = do_authenticate(pamh, PAM_AUTHTOK, flags, &args);
-  return ret;
+  return do_authenticate(pamh, PAM_AUTHTOK, flags, &args);
 }

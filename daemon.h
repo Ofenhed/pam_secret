@@ -1,5 +1,6 @@
 #pragma once
 
+#include <errno.h>
 #include <sys/types.h>
 #define REPLACE_KEY_CMD_FORMAT "replace_key=%i,auth_token=%i"
 

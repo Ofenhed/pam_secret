@@ -83,8 +83,8 @@ int init_privileged() {
   PROP_CRIT(_gain_root_privileges(caps));
   int persistent_storage;
   if ((persistent_storage = get_persistent_storage_fd()) == -1) {
-    fputs("pam_secret is not installed", stderr);
-    exit(-1);
+    log_error("pam_secret is not installed");
+    exit(ENOENT);
   }
   PROP_CRIT(get_system_secret_fd());
   uid_t user = geteuid();

@@ -53,7 +53,7 @@ static inline void defer_cleanup(void (^*b)(void)) { (*b)(); }
 #define PROP_ERR_WITH(x, y)                                                    \
   {                                                                            \
     if ((x) == -1) {                                                           \
-      log_error("Boom at %s: %s", LINE, strerror(errno));                      \
+      log_trace("Error at %s: %s", LINE, strerror(errno));                     \
       {                                                                        \
         y                                                                      \
       }                                                                        \
