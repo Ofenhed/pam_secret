@@ -1,3 +1,6 @@
+#include <stdarg.h>
+#include <stdio.h>
+
 ADD_LOGGER(trace)
 ADD_LOGGER(debug)
 ADD_LOGGER(info)

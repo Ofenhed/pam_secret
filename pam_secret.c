@@ -77,7 +77,7 @@ static FILE *flogger() {
   return flog;
 }
 
-uid_t __pam_secret_saved_user_uid = -1;
+uid_t __pam_secret_saved_user_uid = INVALID_USER;
 static int pam_save_user_uid(pam_handle_t *pamh) {
   auto flog = flogger();
   const char *pUsername;
@@ -384,7 +384,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
         return PAM_SYSTEM_ERR;
       }
       uid_t target_user = pam_get_user_uid();
-      if (target_user == -1) {
+      if (target_user == INVALID_USER) {
         return PAM_SYSTEM_ERR;
       }
       if (install_user_session_cred_secret(new_token, target_user, true) ==

@@ -37,7 +37,7 @@ int install_persistent_credentials_directory() {
   auto dir = get_persistent_storage_location();
   int dir_fd;
   gid_t group;
-  if ((group = manager_group()) == -1) {
+  if ((group = manager_group()) == INVALID_GROUP) {
     const char *group_name = manager_group_name();
     fprintf(stderr,
             "The group %s does not exist. Please create it:\n groupadd "

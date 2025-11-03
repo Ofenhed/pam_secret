@@ -20,7 +20,7 @@ typedef struct {
 #endif
   } kind;
   union {
-    int data_len;
+    size_t data_len;
 #ifdef DEBUG_QUERY_SECRETS
     int secret_fd;
 #endif

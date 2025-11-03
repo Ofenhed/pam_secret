@@ -1,9 +1,7 @@
 #pragma once
 
-#include <stdarg.h>
-#include <stdio.h>
-
 void set_default_log_output(int fd);
+int get_default_log_output(void);
 
 #define ADD_LOGGER(LEVEL)                                                      \
   void log_##LEVEL(const char *restrict format, ...);                          \

@@ -53,8 +53,8 @@ int session_encrypted_fd = -1, session_encrypted_data_len = 0,
 #endif
 
 gid_t manager_group() {
-  static gid_t manager_group = -1;
-  if (manager_group == -1) {
+  static gid_t manager_group = INVALID_GROUP;
+  if (manager_group == INVALID_GROUP) {
     struct group *gr = getgrnam(SERVICE_GROUP_STR);
     if (gr == NULL) {
       errno = ENOENT;
@@ -124,7 +124,7 @@ int xor_secret_data(const secret_state_t *data, secret_state_t *output) {
   const secret_state_t *key = init_and_get_session_mask();
   unsigned char *out_ptr = *output;
   const unsigned char *data_ptr = *data, *key_ptr = *key;
-  for (int i = 0; i < sizeof(secret_state_t); ++i) {
+  for (size_t i = 0; i < sizeof(secret_state_t); ++i) {
     out_ptr[i] = data_ptr[i] ^ key_ptr[i];
   }
   return 0;
@@ -202,7 +202,7 @@ int open_persistent_secret_fd(uid_t user) {
 
 int get_persistent_secret_fd(uid_t user) {
   static int secret_fd = -1;
-  static int fd_user = -1;
+  static uid_t fd_user = UINT_MAX;
   if (secret_fd == -1 || fd_user != user) {
     if (secret_fd != -1) {
       close(secret_fd);
@@ -271,10 +271,6 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
     const char **end_args = ARR_END(scrypt_args);
     const char **curr_arg = scrypt_args;
 
-    // PROP_ERR(add_arg(&curr_arg, end_args, "/usr/bin/bash"));
-    // PROP_ERR(add_arg(&curr_arg, end_args, "-c"));
-    // PROP_ERR(add_arg(&curr_arg, end_args, "ls -lah /proc/$$/fd/; scrypt
-    // \"${@}\""));
     log_debug("%scrypting data\n", params.op == ENCRYPT ? "En" : "De");
     PROP_ERR(add_arg(&curr_arg, end_args, "/usr/bin/scrypt"));
     PROP_ERR(to_scrypt_args(&params, &curr_arg, end_args));
@@ -533,10 +529,10 @@ int create_user_persistent_cred_secret(int secret_fd,
     return -1;
   }
   if (session_secret_fd != -1) {
-      close(session_secret_fd);
-      if (new_secret) {
-        log_error("Generated new secret despite already having a secret");
-      }
+    close(session_secret_fd);
+    if (new_secret) {
+      log_error("Generated new secret despite already having a secret");
+    }
   } else {
     session_secret_fd = dup(secret_fd);
   }
@@ -738,10 +734,10 @@ int to_scrypt_args(scrypt_action_t *action, const char ***args,
                        bufnprintf(&args_ptr, buf_end, "%i", work.n)));
       PROP_ERR(add_arg(args, args_end, "-r"));
       PROP_ERR(add_arg(args, args_end,
-                       bufnprintf(&args_ptr, buf_end, "%i", work.r)));
+                       bufnprintf(&args_ptr, buf_end, "%li", work.r)));
       PROP_ERR(add_arg(args, args_end, "-p"));
       PROP_ERR(add_arg(args, args_end,
-                       bufnprintf(&args_ptr, buf_end, "%i", work.p)));
+                       bufnprintf(&args_ptr, buf_end, "%f", work.p)));
     }
     return 0;
   }

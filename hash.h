@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attributes.h"
 #include <openssl/evp.h>
 
 #define HASH_LEN 32
@@ -30,18 +31,31 @@ typedef struct {
   int active_buf;
 } hash_state_t;
 
-void hmac(hash_state_t *h, const unsigned char *secret, int secret_len,
-          const unsigned char *msg, int msg_len);
-void hmac_msg(hash_state_t *h, const unsigned char *msg, int msg_len);
+void hmac(hash_state_t *h, const unsigned char *secret, size_t secret_len,
+          const unsigned char *msg,
+          size_t msg_len) __gcc_attribute__((nonnull_if_nonzero(2, 3)))
+    __gcc_attribute__((nonnull_if_nonzero(4, 5))) __attribute__((nonnull(1)));
 
-void hmac_finalize(hash_state_t *h, sha256_hash_t *output);
-sha256_hash_t *hmac_result(hash_state_t *h);
+void hmac_msg(hash_state_t *h, const unsigned char *msg, size_t msg_len)
+    __gcc_attribute__((nonnull_if_nonzero(2, 3))) __attribute__((nonnull(1)));
+
+void hmac_finalize(hash_state_t *h, sha256_hash_t *output)
+    __gcc_attribute__((access(read_only, 1)))
+        __gcc_attribute__((access(write_only, 2)))
+            __attribute__((nonnull(1), nonnull(2)));
+
+sha256_hash_t *hmac_result(hash_state_t *h) __attribute__((nonnull, pure));
 
 int hash_init_memfd(int hash_fd, int secret_fd, const unsigned char *msg,
-                    int msg_len);
+                    size_t msg_len) __gcc_attribute__((fd_arg_write(1)))
+    __gcc_attribute__((fd_arg_read(2)));
 
-int hash_add(int hash_fd, const unsigned char *msg, int msg_len);
+int hash_add(int hash_fd, const unsigned char *msg, size_t msg_len)
+    __gcc_attribute__((nonnull_if_nonzero(2, 3)))
+        __gcc_attribute__((fd_arg(1)));
 
-int finalize_hash(int hash_fd, int secret_fd, sha256_hash_t *hash);
+int finalize_hash(int hash_fd, int secret_fd, sha256_hash_t *hash)
+    __attribute__((nonnull(3))) __gcc_attribute__((access(write_only, 3)))
+        __gcc_attribute__((fd_arg(1))) __gcc_attribute__((fd_arg_read(2)));
 
-sha256_hash_hex_t hash_to_hex(const sha256_hash_t *hash);
+sha256_hash_hex_t hash_to_hex(const sha256_hash_t *hash) __gcc_attribute__((access(read_only, 1)));

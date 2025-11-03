@@ -69,10 +69,10 @@ int recv_peer_msg(int sock, msg_info_t *info, int *_Nullable fd) {
   msg_info_t msg_kind = msgs[0];
   if (nbytes == 0) {
     return 0;
-  } else if (nbytes < sizeof(msg_info_t)) {
+  } else if (nbytes < 0 || (size_t)nbytes < sizeof(msg_info_t)) {
     errno = EINVAL;
     return -1;
-  } else if (msg_kind.kind == 0) {
+  } else if (msg_kind.kind == MSG_PEER_EOF) {
     errno = EINVAL;
     return -1;
   }
@@ -103,8 +103,6 @@ int send_peer_msg(int sock, msg_info_t info, int *_Nullable fd, int options) {
   struct iovec iov[1];
 
   if ((fd == NULL || *fd == -1) != !msg_has_fd(info)) {
-    log_error("Invalid fd %p (%i) set for signal %i (expected to be %i)", fd,
-              *fd, info.kind, MSG_UNKNOWN_ERROR);
     exit(EXIT_FAILURE);
   }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attributes.h"
 #include "hash.h"
 #include <stdbool.h>
 #include <sys/mman.h>
@@ -17,6 +18,9 @@ int get_persistent_secret_path_fd(uid_t user);
 int get_session_secret_fd();
 int get_system_secret_fd();
 const char *get_persistent_secret_filename(uid_t user);
+
+static const uid_t INVALID_USER = UINT_MAX;
+static const gid_t INVALID_GROUP = UINT_MAX;
 
 #ifdef SECRET_LEN_OVERRIDE
 #define SECRET_LEN SECRET_LEN_OVERRIDE
@@ -70,38 +74,47 @@ typedef struct {
   };
 } scrypt_action_t;
 
-__attribute__((malloc(munmap, 1))) secret_state_t *map_session_cred();
-__attribute__((fd_arg_write(4))) int
-scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
-               int user_password_len, int out_secret_fd);
+secret_state_t *map_session_cred() __attr_malloc__(munmap, 1);
+int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
+                   int user_password_len, int out_secret_fd)
+    __gcc_attribute__((fd_arg_write(4)));
 scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
                                       const unsigned char *secret,
                                       int secret_len);
-__attribute__((fd_arg_read(2))) scrypt_action_t
-set_scrypt_input_fd(scrypt_action_t params, int fd);
+scrypt_action_t set_scrypt_input_fd(scrypt_action_t params, int fd)
+    __gcc_attribute__((fd_arg_read(2)));
 int authenticate_user(const unsigned char *password, int password_len);
 int lock_plain_user_secret();
 
 int set_memfd_random(int fd, int len);
 
 int to_scrypt_args(scrypt_action_t *params, const char ***args,
-                   const char **args_end);
+                   const char **args_end)
+    __gcc_attribute__((access(read_only, 1)))
+        __gcc_attribute__((access(write_only, 2)))
+            __attribute__((nonnull(1, 2, 3)));
 
 scrypt_action_t default_trivial_args();
 scrypt_action_t default_persistent_args();
 scrypt_action_t default_session_args();
 
 int install_user_session_cred_secret(int source_fd, uid_t user,
-                                     int allow_create);
+                                     int allow_create)
+    __gcc_attribute__((fd_arg_read(1)));
 int create_user_persistent_cred_secret(int secret_fd,
                                        const unsigned char *user_password,
-                                       int user_password_len,
-                                       int persistent_fd);
+                                       int user_password_len, int persistent_fd)
+    __gcc_attribute__((nonnull_if_nonzero(2, 3)))
+        __gcc_attribute__((fd_arg_read(1)))
+            __gcc_attribute__((fd_arg_write(4)));
 
 const secret_state_t *init_and_get_session_mask();
 
-void hashed_user_cred(const unsigned char *user_password, int user_password_len,
-                      sha256_hash_t *output);
+void hashed_user_cred(const unsigned char *restrict user_password,
+                      int user_password_len, sha256_hash_t *output)
+    __gcc_attribute__((nonnull_if_nonzero(1, 2))) __attribute__((nonnull(3)))
+    __gcc_attribute__((access(write_only, 3)));
 int pam_translated_user_auth_token(const unsigned char *user_password,
-                                   int user_password_len,
-                                   sha256_hash_t *output);
+                                   int user_password_len, sha256_hash_t *output)
+    __gcc_attribute__((nonnull_if_nonzero(1, 2))) __attribute__((nonnull(3)))
+    __gcc_attribute__((access(write_only, 3)));

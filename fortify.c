@@ -21,7 +21,7 @@ static int _gain_root_privileges(cap_t caps) {
   PROP_ERR(cap_get_flag(caps, CAP_PERMITTED, CAP_DAC_OVERRIDE, &permitted));
   if (!permitted) {
     errno = EACCES;
-    fprintf(stderr, "This program needs the CAP_DAC_OVERRIDE capability.\n");
+    log_error("This program needs the CAP_DAC_OVERRIDE capability.");
 #ifndef DEBUG
     exit(EXIT_FAILURE);
 #endif

@@ -3,8 +3,9 @@
 
 #undef ADD_LOGGER
 
-int __log_default_log_output = 2;
-void set_default_log_output(int fd) { __log_default_log_output = fd; }
+static int default_log_output = 2;
+void set_default_log_output(int fd) { default_log_output = fd; }
+int get_default_log_output(void) { return default_log_output; }
 
 #define ADD_LOGGER(LEVEL)                                                      \
   void vdlog_##LEVEL(int output, const char *restrict format, va_list args) {  \
@@ -29,7 +30,7 @@ void set_default_log_output(int fd) { __log_default_log_output = fd; }
     va_end(args);                                                              \
   }                                                                            \
   void vlog_##LEVEL(const char *restrict format, va_list args) {               \
-    vdlog_##LEVEL(__log_default_log_output, format, args);                     \
+    vdlog_##LEVEL(get_default_log_output(), format, args);                     \
   }                                                                            \
   void log_##LEVEL(const char *restrict format, ...) {                         \
     va_list args;                                                              \

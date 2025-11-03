@@ -20,9 +20,9 @@
 int connect_daemon(uid_t(get_target_user)()) {
   int sock;
   struct sockaddr_un address;
-  if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s",
-               get_runtime_dir(get_target_user),
-               get_socket_name()) >= ARR_LEN(address.sun_path)) {
+  if ((size_t)snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s",
+                       get_runtime_dir(get_target_user),
+                       get_socket_name()) >= ARR_LEN(address.sun_path)) {
     CRITICAL_ERR("Socket path too long");
   }
   address.sun_family = AF_UNIX;
@@ -147,7 +147,7 @@ int run_daemon(const char *name, int socket_not_listening) {
   char printf_buf[256];
   char *buf_ptr = printf_buf;
 #define RESET_BUF_PTR() (buf_ptr = printf_buf)
-  int persistent_inotify, inotify_key_deleted, inotify_run_dir_modified;
+  int persistent_inotify, inotify_run_dir_modified;
   const char *const buf_end = ARR_END(printf_buf);
   peer_state_t *state_tmp;
   uid_t server_user = geteuid();
@@ -160,11 +160,6 @@ int run_daemon(const char *name, int socket_not_listening) {
 
   {
     PROP_CRIT(persistent_inotify = inotify_init1(IN_CLOEXEC));
-    // const char *path = bufnprintf(&buf_ptr, buf_end, "/proc/self/fd/%i",
-    //                               get_persistent_secret_fd(server_user));
-    // PROP_CRIT(inotify_key_deleted = inotify_add_watch(
-    //               persistent_inotify, path,
-    //               IN_DELETE_SELF | IN_MOVE_SELF | IN_ONESHOT));
     RESET_BUF_PTR();
     ev.events = EPOLLIN;
     if (!(state_tmp = malloc_peer_state(&ev, persistent_inotify))) {
@@ -180,8 +175,8 @@ int run_daemon(const char *name, int socket_not_listening) {
   address.sun_family = AF_UNIX;
   const char *const socket_dir = get_runtime_dir(geteuid);
   const char *const socket_name = get_socket_name();
-  if (snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s", socket_dir,
-               socket_name) >= ARR_LEN(address.sun_path)) {
+  if ((size_t)snprintf(address.sun_path, ARR_LEN(address.sun_path), "%s/%s",
+                       socket_dir, socket_name) >= ARR_LEN(address.sun_path)) {
     CRITICAL_ERR("Socket path too long");
   }
   unlink(address.sun_path);
@@ -250,7 +245,7 @@ int run_daemon(const char *name, int socket_not_listening) {
         }
       } else if (peer->peer_kind == INOTIFY_TRIGGER) {
         char iev_buf[(sizeof(struct inotify_event) + 128) << 3];
-        int c;
+        ssize_t c;
         PROP_CRIT(c = read(persistent_inotify, &iev_buf, ARR_LEN(iev_buf)));
         if (c == 0) {
           log_error("Inotify closed, what does that mean?\n");
@@ -260,19 +255,8 @@ int run_daemon(const char *name, int socket_not_listening) {
         const struct inotify_event *iev_end =
             (struct inotify_event *)(iev_buf + c);
         while (iev_ptr < iev_end) {
-          if (iev_ptr->wd == inotify_key_deleted) {
-            log_warning(
-                "User key deleted!\nThat's someone else's problem now.\n");
-            epoll_ctl(epollfd, EPOLL_CTL_DEL, server, &events[n]);
-            close(server);
-            if (fork() == 0) {
-              char *args[] = {(char *)name, "daemon", NULL};
-              execv("/proc/self/exe", args);
-              exit(EXIT_FAILURE);
-            }
-            server_shutdown = 1;
-          } else if (iev_ptr->wd == inotify_run_dir_modified &&
-                     strcmp(iev_ptr->name, socket_name) == 0) {
+          if (iev_ptr->wd == inotify_run_dir_modified &&
+              strcmp(iev_ptr->name, socket_name) == 0) {
             log_error("They killed my socket file.\nWait for me, buddy...\n");
             epoll_ctl(epollfd, EPOLL_CTL_DEL, server, &events[n]);
             close(server);
@@ -348,7 +332,7 @@ int run_daemon(const char *name, int socket_not_listening) {
           continue;
         }
         if (info.kind == MSG_HASH_DATA) {
-          if (info.data_len < 0 || info.data_len > 1 << 30) {
+          if (info.data_len > 1 << 30) {
             log_debug("Invalid file size received from peer: %i",
                       info.data_len);
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
@@ -526,9 +510,8 @@ int run_daemon(const char *name, int socket_not_listening) {
             int auth_fd;
             PROP_CRIT(auth_fd = inherit_fd(get_system_secret_fd()));
             PROP_CRIT(output_fd = inherit_fd(output_fd));
-            const char *update_arg =
-                bufnprintf(&buf_ptr, buf_end, REPLACE_KEY_CMD_FORMAT, output_fd,
-                           auth_fd, NULL);
+            const char *update_arg = bufnprintf(
+                &buf_ptr, buf_end, REPLACE_KEY_CMD_FORMAT, output_fd, auth_fd);
             log_debug("Running update with %s\n", update_arg);
             char *args[] = {"/usr/sbin/pam_secret", (char *)update_arg, NULL};
             if (execv(args[0], args) == -1) {

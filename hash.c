@@ -23,10 +23,11 @@ static void print_sized(const char *var, int length) {
 }
 #endif
 
-void hmac(hash_state_t *h, const unsigned char *secret, int secret_len,
-          const unsigned char *msg, int msg_len) {
+void hmac(hash_state_t *h, const unsigned char *secret, size_t secret_len,
+          const unsigned char *msg, size_t msg_len) {
   unsigned int hash_len;
-  HMAC(EVP_sha256(), secret, secret_len, msg, msg_len,
+  int i_secret_len = secret_len > INT_MAX ? INT_MAX : (int)secret_len;
+  HMAC(EVP_sha256(), secret, i_secret_len, msg, msg_len,
        h->hash_buffers[h->active_buf ^= 1], &hash_len);
 #ifdef DEBUG_DUMP_HASHING
   printf("HMAC(");
@@ -40,7 +41,9 @@ void hmac(hash_state_t *h, const unsigned char *secret, int secret_len,
   assert(hash_len == sizeof(sha256_hash_t));
 }
 
-void hmac_msg(hash_state_t *h, const unsigned char *msg, int msg_len) {
+void hmac_msg(hash_state_t *h, const unsigned char *msg, size_t msg_len) {
+  if (msg_len > INT_MAX)
+    msg_len = INT_MAX;
   hmac(h, h->hash_buffers[h->active_buf], sizeof(sha256_hash_t), msg, msg_len);
 }
 
@@ -61,7 +64,7 @@ sha256_hash_t *mmapped_hmac_result(hash_state_t *h) {
 }
 
 int hash_init_memfd(int hash_fd, int secret_fd, const unsigned char *msg,
-                    int msg_len) {
+                    size_t msg_len) {
   PROP_ERR_WITH(ftruncate(hash_fd, sizeof(hash_state_t)), close(hash_fd););
   hash_state_t *h = mmap(NULL, sizeof(hash_state_t), PROT_READ | PROT_WRITE,
                          MAP_SHARED, hash_fd, 0);
@@ -81,7 +84,7 @@ int hash_init_memfd(int hash_fd, int secret_fd, const unsigned char *msg,
   return 0;
 }
 
-int hash_add(int hash_fd, const unsigned char *msg, int msg_len) {
+int hash_add(int hash_fd, const unsigned char *msg, size_t msg_len) {
   hash_state_t *h = mmap(NULL, sizeof(hash_state_t), PROT_READ | PROT_WRITE,
                          MAP_SHARED, hash_fd, 0);
   if (h == MAP_FAILED) {

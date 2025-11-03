@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attributes.h"
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -66,8 +67,6 @@ static inline void defer_cleanup(void (^*b)(void)) { (*b)(); }
       CRITICAL_ERR(strerror(errno))                                            \
   }
 
-#define EXPORTED __attribute__((visibility("default")))
-
 #ifdef DEBUG
 #define DEBUG_PROP_ERR(x) PROP_ERR(x)
 #else
@@ -78,31 +77,32 @@ static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
 
 const char *vbufnprintf(char **restrict buf, const char *restrict const buf_end,
-                        const char *restrict format, va_list list);
-__attribute__((format(printf, 3, 4))) const char *
-bufnprintf(char **buf, const char *const buf_end, const char *format, ...);
+                        const char *restrict format, va_list list) __attribute__((format(printf, 3, 0)));
+const char *bufnprintf(char **buf, const char *const buf_end,
+                       const char *format, ...)
+    __attribute__((format(printf, 3, 4)));
 // Create a string that is valid until the next time this function is called.
 // Not thread safe!
-__attribute__((format(printf, 1, 2))) char *
-tmp_sprintf(const char *restrict format, ...);
-char *tmp_vsprintf(const char *restrict format, va_list list);
+char *tmp_sprintf(const char *restrict format, ...)
+    __attribute__((format(printf, 1, 2)));
+char *tmp_vsprintf(const char *restrict format, va_list list) __attribute__((format(printf, 1, 0)));
 
 int read_secret_password(char *restrict password, int password_len,
-                         const char *restrict format, ...);
+                         const char *restrict format, ...)
+    __attribute__((format(printf, 3, 4)));
 
 int add_arg(const char ***args, const char *const *const args_end,
             const char *arg);
 const char *get_runtime_dir(uid_t(get_target_user)(void));
 
-__attribute__((fd_arg(1))) inline static int inherit_fd(int fd) {
-  // return fcntl(fd, F_SETFD, FD_CLOEXEC, 0);
-  // return fd;
+__gcc_attribute__((fd_arg(1))) inline static int inherit_fd(int fd) {
   int new_fd = dup(fd);
   dup2(fd, new_fd);
   return new_fd;
 }
 
-__attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd, int fd2) {
+__gcc_attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd, int fd2)
+    {
   int new_fd = inherit_fd(fd);
   PROP_ERR(new_fd);
   if (new_fd != fd2) {
@@ -115,13 +115,17 @@ __attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd, int fd2) {
   return new_fd;
 }
 
-int write_random_data(char *target, int secret_length);
-__attribute__((malloc, malloc(munmap, 1))) void *
-__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
-            int flags, int fd, __off_t offset);
+__gcc_attribute__((access(write_only,
+                          1))) int write_random_data(char *target,
+                                                     int secret_length);
+__attr_malloc__(munmap, 1)
+    __attribute__((alloc_size(3))) void *__crit_mmap(const char *call_source,
+                                                     void *addr, size_t len,
+                                                     int prot, int flags,
+                                                     int fd, __off_t offset);
 #define crit_mmap(ADDR, LEN, PROT, FLAGS, FD, OFFSET)                          \
   __crit_mmap(LINE, ADDR, LEN, PROT, FLAGS, FD, OFFSET)
 
-__attribute__((malloc, malloc(munmap, 1))) void *__memfd_secret_alloc(int size);
+__attr_malloc__(munmap, 1) void *__memfd_secret_alloc(int size);
 #define crit_memfd_secret_alloc(PTR) (PTR = __memfd_secret_alloc(sizeof(*PTR)))
 #define crit_munmap(PTR) PROP_CRIT(munmap(PTR, sizeof(*PTR)))

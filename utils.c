@@ -4,7 +4,6 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,7 +132,7 @@ const char *get_runtime_dir(uid_t(get_target_user)(void)) {
     // if ((socket_dir = secure_getenv("XDG_RUNTIME_DIR")) == NULL) {
     int len = snprintf(runtime_dir_buf, ARR_LEN(runtime_dir_buf),
                        "/run/user/%u", get_target_user());
-    if (len < ARR_LEN(runtime_dir_buf))
+    if (len > 0 && (unsigned int)len < ARR_LEN(runtime_dir_buf))
       socket_dir = runtime_dir_buf;
     //}
   }
@@ -165,8 +164,8 @@ void debug_output() {
 #endif
 }
 
-inline void *__crit_mmap(const char *call_source, void *addr, size_t len,
-                         int prot, int flags, int fd, __off_t offset) {
+void *__crit_mmap(const char *call_source, void *addr, size_t len, int prot,
+                  int flags, int fd, __off_t offset) {
   if (len == 0) {
     log_error("Tried to allocate zero bytes at %s", call_source);
     return NULL;
