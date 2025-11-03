@@ -90,7 +90,7 @@ int read_secret_password(char *restrict password, int password_len,
   va_end(format_args);
   char *password_ptr = password;
   const char *const password_end = password_ptr + password_len;
-  int read_error;
+  int read_error = 0;
   while (password_ptr < password_end && !feof(stdin) &&
          (*password_ptr = fgetc(stdin)) && *password_ptr != '\n') {
     if (*password_ptr == -1) {

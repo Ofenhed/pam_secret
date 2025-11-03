@@ -130,8 +130,8 @@ static int daemon_socket(int open) {
         log_debug("Launching daemon");
         uid_t target_user = pam_get_user_uid();
         gid_t target_group = manager_group();
-        setresgid(target_group, target_group, target_group);
-        setresuid(target_user, target_user, target_user);
+        PROP_ERR(setresgid(target_group, target_group, target_group));
+        PROP_ERR(setresuid(target_user, target_user, target_user));
         char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
         int logger = get_default_log_output();
         dup2(logger, stdout_fd);
@@ -373,7 +373,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       const size_t auth_token_len = strlen(p_auth_token);
 
       int new_token =
-          open(get_runtime_dir(pam_get_user_uid), O_TMPFILE | O_RDWR);
+          open(get_runtime_dir(pam_get_user_uid), O_TMPFILE | O_RDWR, 0400);
       int cred_len;
       if ((cred_len = create_user_persistent_cred_secret(
                -1, (unsigned char *)p_auth_token, auth_token_len, new_token)) ==

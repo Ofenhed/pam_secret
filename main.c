@@ -99,7 +99,8 @@ EXPORTED int libpam_secret_exported_main(int argc, char **argv) {
       char *password[MAX_PASSWORD_LENGTH],
           *verify_password[MAX_PASSWORD_LENGTH];
       int secret_fd;
-      PROP_CRIT(secret_fd = open(get_runtime_dir(geteuid), O_TMPFILE | O_RDWR));
+      PROP_CRIT(secret_fd =
+                    open(get_runtime_dir(geteuid), O_TMPFILE | O_RDWR, 0400));
       crit_memfd_secret_alloc(*password);
       crit_memfd_secret_alloc(*verify_password);
       int password_len;
@@ -213,7 +214,8 @@ EXPORTED int libpam_secret_exported_main(int argc, char **argv) {
         if (child_pid != 0) {
           char buf[32];
           close(socket_up_indicator[PIPE_TX]);
-          read(socket_up_indicator[PIPE_RX], buf, ARR_LEN(buf));
+          int __attribute__((unused)) _ignored =
+              read(socket_up_indicator[PIPE_RX], buf, ARR_LEN(buf));
           close(socket_up_indicator[PIPE_RX]);
           continue;
         }

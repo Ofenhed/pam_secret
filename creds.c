@@ -394,7 +394,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
               errno = EACCES;
               return -1;
             } else {
-              ftruncate(out_secret_fd, saved_len);
+              PROP_CRIT(ftruncate(out_secret_fd, saved_len));
               return saved_len;
             }
           }
@@ -444,7 +444,9 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   // why it fails, though.
   DEFER({ unlinkat(wd, tmpfile, 0); });
   gid_t group = manager_group();
-  fchown(output_fd, user, group);
+  if (fchown(output_fd, user, group) == -1) {
+      log_warning("Could not set group for user secret file");
+  }
   if (!allow_create) {
     if (faccessat(wd, newfile, F_OK, 0) == 0) {
       perror("Unable to create new credential");
@@ -454,7 +456,9 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   log_trace("Overwriting old credential file");
   PROP_ERR(renameat(wd, tmpfile, wd, newfile));
   log_trace("Attempting to change owner to %i:%i\n", user, group);
-  fchownat(wd, newfile, user, group, 0);
+  if (fchownat(wd, newfile, user, group, 0) == -1) {
+      log_warning("Coult not set mode for user secret file");
+  }
   return 0;
 }
 
@@ -472,9 +476,7 @@ int hashed_user_cred(const unsigned char *user_password, int user_password_len,
        STR_LEN(HASH_TYPE_STORAGE_ENCRYPTION_KEY), user_password,
        user_password_len);
   hmac_msg(hash_state, *system_secret, sizeof(*system_secret));
-  crit_munmap(system_secret);
   hmac_finalize(hash_state, output);
-  crit_munmap(hash_state);
   return 0;
 }
 
