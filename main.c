@@ -51,7 +51,6 @@ int install_new_user_key(int parent_auth_fd, int new_content) {
   //  return -1;
   //}
   log_debug("Installing new credential");
-  // TODO: Figure out why install_user_session_cred_secret borks
   PROP_ERR(install_user_session_cred_secret(new_content, geteuid(), false));
   log_debug("Finalizing");
   PROP_ERR(drop_root_privileges(0));

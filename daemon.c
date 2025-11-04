@@ -198,7 +198,7 @@ int run_daemon(const char *name, int socket_not_listening) {
   if (socket_not_listening != -1)
     close(socket_not_listening);
   int persistent_secret;
-  PROP_ERR(persistent_secret = open_persistent_secret_fd(server_user));
+  PROP_ERR(persistent_secret = get_persistent_secret_path_fd(server_user));
   while (true) {
     struct epoll_event events[5];
     int nfds;
