@@ -1,4 +1,5 @@
 #include "creds.h"
+#include "path.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -76,8 +77,7 @@ int init_privileged() {
   assert(!initialized);
   initialized = true;
   protect_stdin();
-  void init_proc_fds(); // defined in path.c
-  init_proc_fds();
+  (void)get_proc_self_fd();
   auto caps = cap_get_proc();
   DEFER({ cap_free(caps); });
   PROP_CRIT(_gain_root_privileges(caps));
