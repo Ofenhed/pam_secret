@@ -394,7 +394,7 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
               errno = EACCES;
               return -1;
             } else {
-              PROP_CRIT(ftruncate(out_secret_fd, saved_len));
+              int __attribute__((unused)) _may_fail = ftruncate(out_secret_fd, saved_len);
               return saved_len;
             }
           }
