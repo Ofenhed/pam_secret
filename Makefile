@@ -33,7 +33,7 @@ build:
 build/%.o: %.c build
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
-build/pam_secret.so-debug: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o build/log.o build/path.o
+build/pam_secret.so-debug: build/main.o build/utils.o build/creds.o build/extern.o build/install.o build/hash.o build/daemon.o build/ipc.o build/fortify.o build/pam_secret.o build/log.o build/path.o build/session_mask.o
 	$(CC) -fPIC -shared $^ -lssl -lcap -lpam -o $@ $(LDFLAGS) -z,now -Wl,-soname=$(pam_lib_dir)/pam_secret.so
 
 build/pam_secret.so.symbols: build/pam_secret.so-debug

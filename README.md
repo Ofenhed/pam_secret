@@ -19,6 +19,3 @@ auth    sufficient    pam_unix.so {if not "without-nullok":nullok}
 password   requisite    pam_secret.so auto_install translate_authtok
 password   sufficient    pam_unix.so yescrypt shadow nullok use_authtok
 ```
-
-Preferably you should also run `tpm2_pcrreset` on your register on screen saver activation.
-

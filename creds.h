@@ -108,8 +108,6 @@ int create_user_persistent_cred_secret(int secret_fd,
         __gcc_attribute__((fd_arg_read(1)))
             __gcc_attribute__((fd_arg_write(4)));
 
-const secret_state_t *init_and_get_session_mask();
-
 int hashed_user_cred(const unsigned char *restrict user_password,
                       int user_password_len, sha256_hash_t *output)
     __gcc_attribute__((nonnull_if_nonzero(1, 2))) __attribute__((nonnull(3)))

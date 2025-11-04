@@ -3,6 +3,7 @@
 #include "hash.h"
 #include "log.h"
 #include "path.h"
+#include "session_mask.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -98,30 +99,8 @@ int set_memfd_random(int fd, int len) {
   return result;
 }
 
-const secret_state_t *init_and_get_session_mask() {
-  static struct {
-    int offset;
-    secret_state_t session_xor_mask;
-  } *session_object;
-  if (session_object == NULL) {
-    int mask_fd;
-    PROP_CRIT(mask_fd = memfd_secret(O_CLOEXEC));
-    PROP_CRIT(ftruncate64(mask_fd, sizeof(*session_object)));
-    session_object = crit_mmap(NULL, sizeof(*session_object), PROT_WRITE,
-                               MAP_SHARED, mask_fd, 0);
-    PROP_CRIT(write_random_data((char *)&session_object->session_xor_mask,
-                                ARR_LEN(session_object->session_xor_mask)));
-    crit_munmap(session_object);
-    session_object = NULL;
-    session_object = crit_mmap(NULL, sizeof(*session_object), PROT_READ,
-                               MAP_SHARED, mask_fd, 0);
-    close(mask_fd);
-  }
-  return &session_object->session_xor_mask;
-}
-
 int xor_secret_data(const secret_state_t *data, secret_state_t *output) {
-  const secret_state_t *key = init_and_get_session_mask();
+  const secret_state_t *key = get_session_mask();
   unsigned char *out_ptr = *output;
   const unsigned char *data_ptr = *data, *key_ptr = *key;
   for (size_t i = 0; i < sizeof(secret_state_t); ++i) {
@@ -394,7 +373,8 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
               errno = EACCES;
               return -1;
             } else {
-              int __attribute__((unused)) _may_fail = ftruncate(out_secret_fd, saved_len);
+              int __attribute__((unused)) _may_fail =
+                  ftruncate(out_secret_fd, saved_len);
               return saved_len;
             }
           }
@@ -445,7 +425,7 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   DEFER({ unlinkat(wd, tmpfile, 0); });
   gid_t group = manager_group();
   if (fchown(output_fd, user, group) == -1) {
-      log_warning("Could not set group for user secret file");
+    log_warning("Could not set group for user secret file");
   }
   if (!allow_create) {
     if (faccessat(wd, newfile, F_OK, 0) == 0) {
@@ -457,7 +437,7 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   PROP_ERR(renameat(wd, tmpfile, wd, newfile));
   log_trace("Attempting to change owner to %i:%i\n", user, group);
   if (fchownat(wd, newfile, user, group, 0) == -1) {
-      log_warning("Coult not set mode for user secret file");
+    log_warning("Coult not set mode for user secret file");
   }
   return 0;
 }
@@ -683,6 +663,7 @@ int lock_plain_user_secret() {
   if (session_secret_fd != -1) {
     int fd = session_secret_fd;
     session_secret_fd = -1;
+    set_memfd_random(fd, sizeof(secret_state_t));
     return close(fd);
   }
   return 0;
