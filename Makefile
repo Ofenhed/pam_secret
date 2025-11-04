@@ -14,6 +14,10 @@ ifeq ($(CC), clang)
 	CFLAGS = -fblocks
 endif
 
+ifndef target
+	target = release
+endif
+
 ifeq ($(target), release)
 	CFLAGS += -O2 -fstack-protector-all -Wstrict-overflow -D_FORTIFY_SOURCE=2
 	LDFLAGS += -Wl,-z,noexecstack -Wl,-z,noexecheap -Wl,-z,relro -Wl,-z,now
