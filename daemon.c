@@ -164,7 +164,7 @@ int run_daemon(const char *name, int socket_not_listening) {
     ev.events = EPOLLIN;
     if (!(state_tmp = malloc_peer_state(&ev, persistent_inotify))) {
       log_error("Couldn't allocate inotify state: %s", strerror(errno));
-      return -1;
+      exit(EXIT_FAILURE);
     }
     state_tmp->peer_kind = INOTIFY_TRIGGER;
     PROP_CRIT(epoll_ctl(epollfd, EPOLL_CTL_ADD, persistent_inotify, &ev));
@@ -190,7 +190,7 @@ int run_daemon(const char *name, int socket_not_listening) {
   ev.events = EPOLLIN;
   if (!(state_tmp = malloc_peer_state(&ev, server))) {
     perror("Could not allocate server state");
-    return -1;
+    exit(EXIT_FAILURE);
   }
   state_tmp->peer_kind = SERVER;
   PROP_CRIT(epoll_ctl(epollfd, EPOLL_CTL_ADD, server, &ev));
@@ -198,7 +198,7 @@ int run_daemon(const char *name, int socket_not_listening) {
   if (socket_not_listening != -1)
     close(socket_not_listening);
   int persistent_secret;
-  PROP_ERR(persistent_secret = get_persistent_secret_path_fd(server_user));
+  PROP_CRIT(persistent_secret = get_persistent_secret_path_fd(server_user));
   while (true) {
     struct epoll_event events[5];
     int nfds;
@@ -249,7 +249,7 @@ int run_daemon(const char *name, int socket_not_listening) {
         PROP_CRIT(c = read(persistent_inotify, &iev_buf, ARR_LEN(iev_buf)));
         if (c == 0) {
           log_error("Inotify closed, what does that mean?\n");
-          return -1;
+          exit(EXIT_FAILURE);
         }
         struct inotify_event *iev_ptr = (struct inotify_event *)iev_buf;
         const struct inotify_event *iev_end =
@@ -486,7 +486,6 @@ int run_daemon(const char *name, int socket_not_listening) {
             }
             continue;
           }
-          DEFER({ close(secret_fd); });
           unsigned char *pw_mem =
               crit_mmap(NULL, info.data_len, PROT_READ, MAP_SHARED, msg_fd, 0);
           int auth_token_fd;
@@ -516,7 +515,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             char *args[] = {"/usr/sbin/pam_secret", (char *)update_arg, NULL};
             if (execv(args[0], args) == -1) {
               log_error("Child process execve failed: %s", strerror(errno));
-              return -1;
+              exit(EXIT_FAILURE);
             }
           } else {
             close(output_fd);

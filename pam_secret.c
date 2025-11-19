@@ -130,15 +130,15 @@ static int daemon_socket(int open) {
         log_debug("Launching daemon");
         uid_t target_user = pam_get_user_uid();
         gid_t target_group = manager_group();
-        PROP_ERR(setresgid(target_group, target_group, target_group));
-        PROP_ERR(setresuid(target_user, target_user, target_user));
+        PROP_CRIT(setresgid(target_group, target_group, target_group));
+        PROP_CRIT(setresuid(target_user, target_user, target_user));
         char *args[] = {"/usr/sbin/pam_secret", "daemon", NULL};
         int logger = get_default_log_output();
         dup2(logger, stdout_fd);
         dup2(logger, stderr_fd);
         if (execv(args[0], args) == -1) {
           log_error("Could not execute daemon: %s", strerror(errno));
-          return -1;
+          exit(EXIT_FAILURE);
         }
       } else {
         int wstatus;
@@ -394,8 +394,11 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       get_persistent_secret_filename(target_user);
       if (args.translate_authtok) {
         sha256_hash_t new_auth_token_raw;
-        pam_translated_user_auth_token((unsigned char *)p_auth_token,
-                                       auth_token_len, &new_auth_token_raw);
+        if (pam_translated_user_auth_token((unsigned char *)p_auth_token,
+                                           auth_token_len,
+                                           &new_auth_token_raw) == -1) {
+          return PAM_SYSTEM_ERR;
+        }
         sha256_hash_hex_t token = hash_to_hex(&new_auth_token_raw);
         log_debug("Setting authentication token to %s", token.printable);
         pam_set_item(pamh, PAM_AUTHTOK, token.printable);

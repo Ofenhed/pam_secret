@@ -74,25 +74,28 @@ typedef struct {
   };
 } scrypt_action_t;
 
-secret_state_t *map_session_cred() __attr_malloc__(munmap, 1);
+secret_state_t *map_session_cred() __attr_malloc__(munmap, 1)
+    __attribute__((warn_unused_result));
 int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
                    int user_password_len, int out_secret_fd)
-    __gcc_attribute__((fd_arg_write(4)));
+    __gcc_attribute__((fd_arg_write(4))) __attribute__((warn_unused_result));
 scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
                                       const unsigned char *secret,
                                       int secret_len);
 scrypt_action_t set_scrypt_input_fd(scrypt_action_t params, int fd)
     __gcc_attribute__((fd_arg_read(2)));
-int authenticate_user(const unsigned char *password, int password_len);
+int authenticate_user(const unsigned char *password, int password_len)
+    __attribute__((warn_unused_result));
 int lock_plain_user_secret();
 
-int set_memfd_random(int fd, int len);
+int set_memfd_random(int fd, int len) __attribute__((warn_unused_result));
 
 int to_scrypt_args(scrypt_action_t *params, const char ***args,
                    const char **args_end)
     __gcc_attribute__((access(read_only, 1)))
         __gcc_attribute__((access(write_only, 2)))
-            __attribute__((nonnull(1, 2, 3)));
+            __attribute__((nonnull(1, 2, 3)))
+            __attribute__((warn_unused_result));
 
 scrypt_action_t default_trivial_args();
 scrypt_action_t default_persistent_args();
@@ -100,19 +103,21 @@ scrypt_action_t default_session_args();
 
 int install_user_session_cred_secret(int source_fd, uid_t user,
                                      int allow_create)
-    __gcc_attribute__((fd_arg_read(1)));
+    __gcc_attribute__((fd_arg_read(1))) __attribute__((warn_unused_result));
 int create_user_persistent_cred_secret(int secret_fd,
                                        const unsigned char *user_password,
                                        int user_password_len, int persistent_fd)
     __gcc_attribute__((nonnull_if_nonzero(2, 3)))
-        __gcc_attribute__((fd_arg_read(1)))
-            __gcc_attribute__((fd_arg_write(4)));
+        __gcc_attribute__((fd_arg_read(1))) __gcc_attribute__((fd_arg_write(4)))
+            __attribute__((warn_unused_result));
 
 int hashed_user_cred(const unsigned char *restrict user_password,
-                      int user_password_len, sha256_hash_t *output)
+                     int user_password_len, sha256_hash_t *output)
     __gcc_attribute__((nonnull_if_nonzero(1, 2))) __attribute__((nonnull(3)))
-    __gcc_attribute__((access(write_only, 3)));
+    __gcc_attribute__((access(write_only, 3)))
+        __attribute__((warn_unused_result));
 int pam_translated_user_auth_token(const unsigned char *user_password,
                                    int user_password_len, sha256_hash_t *output)
     __gcc_attribute__((nonnull_if_nonzero(1, 2))) __attribute__((nonnull(3)))
-    __gcc_attribute__((access(write_only, 3)));
+    __gcc_attribute__((access(write_only, 3)))
+        __attribute__((warn_unused_result));

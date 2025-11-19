@@ -140,7 +140,7 @@ const char *get_runtime_dir(uid_t(get_target_user)(void)) {
 }
 
 int write_random_data(char *target, int secret_length) {
-  log_debug("Writing %i bytes to %p\n", secret_length, target);
+  log_debug("Writing %i random bytes to %p\n", secret_length, target);
   int random;
   PROP_ERR(random = open("/dev/random", O_CLOEXEC | O_RDONLY));
   DEFER({ close(random); });
@@ -152,7 +152,6 @@ int write_random_data(char *target, int secret_length) {
     PROP_ERR(r);
     buf += r;
   }
-  close(random);
   return 0;
 }
 

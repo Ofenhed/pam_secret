@@ -77,7 +77,8 @@ static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
 
 const char *vbufnprintf(char **restrict buf, const char *restrict const buf_end,
-                        const char *restrict format, va_list list) __attribute__((format(printf, 3, 0)));
+                        const char *restrict format, va_list list)
+    __attribute__((format(printf, 3, 0)));
 const char *bufnprintf(char **buf, const char *const buf_end,
                        const char *format, ...)
     __attribute__((format(printf, 3, 4)));
@@ -85,7 +86,8 @@ const char *bufnprintf(char **buf, const char *const buf_end,
 // Not thread safe!
 char *tmp_sprintf(const char *restrict format, ...)
     __attribute__((format(printf, 1, 2)));
-char *tmp_vsprintf(const char *restrict format, va_list list) __attribute__((format(printf, 1, 0)));
+char *tmp_vsprintf(const char *restrict format, va_list list)
+    __attribute__((format(printf, 1, 0)));
 
 int read_secret_password(char *restrict password, int password_len,
                          const char *restrict format, ...)
@@ -101,8 +103,8 @@ __gcc_attribute__((fd_arg(1))) inline static int inherit_fd(int fd) {
   return new_fd;
 }
 
-__gcc_attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd, int fd2)
-    {
+__gcc_attribute__((fd_arg(1))) inline static int inherit_fd_as(int fd,
+                                                               int fd2) {
   int new_fd = inherit_fd(fd);
   PROP_ERR(new_fd);
   if (new_fd != fd2) {

@@ -30,15 +30,9 @@
 #ifndef PERSISTENT_CREDENTIAL_REQUEST_PREFIX
 #define PERSISTENT_CREDENTIAL_REQUEST_PREFIX ".tmp-new-"
 #endif
-#ifndef SESSION_WRAPPED_DIR
-#define SESSION_WRAPPED_DIR "/var/run/user/%u/sessioncreds.sensitive"
-#endif
-#ifndef SESSION_SECRET_DIR
-#define SESSION_SECRET_DIR "/var/run/user/%u/sessioncreds.secret"
-#endif
 
-int session_encrypted_fd = -1, session_encrypted_data_len = 0,
-    session_secret_fd = -1;
+static int session_encrypted_fd = -1, session_encrypted_data_len = 0,
+           session_secret_fd = -1;
 
 #ifdef SYSTEM_SECRET_FILENAME_OVERRIDE
 #define SYSTEM_SECRET_FILENAME                                                 \
@@ -251,28 +245,28 @@ int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
     const char **curr_arg = scrypt_args;
 
     log_debug("%scrypting data\n", params.op == ENCRYPT ? "En" : "De");
-    PROP_ERR(add_arg(&curr_arg, end_args, "/usr/bin/scrypt"));
-    PROP_ERR(to_scrypt_args(&params, &curr_arg, end_args));
-    PROP_ERR(add_arg(&curr_arg, end_args, "--passphrase"));
-    PROP_ERR(add_arg(&curr_arg, end_args, "dev:stdin-once"));
+    PROP_CRIT(add_arg(&curr_arg, end_args, "/usr/bin/scrypt"));
+    PROP_CRIT(to_scrypt_args(&params, &curr_arg, end_args));
+    PROP_CRIT(add_arg(&curr_arg, end_args, "--passphrase"));
+    PROP_CRIT(add_arg(&curr_arg, end_args, "dev:stdin-once"));
 
-    PROP_ERR(inherit_fd_as(password_pipe[rx], 0));
+    PROP_CRIT(inherit_fd_as(password_pipe[rx], 0));
     int secret_fd, result_fd;
     if (params.input_is_fd) {
-      PROP_ERR(secret_fd = inherit_fd(params.input.fd));
+      PROP_CRIT(secret_fd = inherit_fd(params.input.fd));
     } else {
-      PROP_ERR(secret_fd = inherit_fd(secret_pipe[rx]));
+      PROP_CRIT(secret_fd = inherit_fd(secret_pipe[rx]));
     }
-    PROP_ERR(add_arg(
+    PROP_CRIT(add_arg(
         &curr_arg, end_args,
         bufnprintf(&args_ptr, args_buf_end, "/proc/self/fd/%i", secret_fd)));
-    PROP_ERR(result_fd = inherit_fd(result_pipe[tx]));
-    PROP_ERR(add_arg(
+    PROP_CRIT(result_fd = inherit_fd(result_pipe[tx]));
+    PROP_CRIT(add_arg(
         &curr_arg, end_args,
         bufnprintf(&args_ptr, args_buf_end, "/proc/self/fd/%i", result_fd)));
     if (execv(scrypt_args[0], (char *const *)scrypt_args) == -1) {
       perror("Child process execve failed");
-      return -1;
+      exit(EXIT_FAILURE);
     }
     return 0;
   } else {
@@ -451,7 +445,7 @@ int hashed_user_cred(const unsigned char *user_password, int user_password_len,
   DEFER({ munmap(system_secret, sizeof(*system_secret)); });
   hash_state_t *hash_state;
   crit_memfd_secret_alloc(hash_state);
-  DEFER({ munmap(hash_state, sizeof(*hash_state)); });
+  DEFER({ crit_munmap(hash_state); });
   hmac(hash_state, HASH_TYPE_STORAGE_ENCRYPTION_KEY,
        STR_LEN(HASH_TYPE_STORAGE_ENCRYPTION_KEY), user_password,
        user_password_len);
@@ -469,7 +463,7 @@ int pam_translated_user_auth_token(const unsigned char *user_password,
 
   hash_state_t *auth_token_generator;
   crit_memfd_secret_alloc(auth_token_generator);
-  DEFER({ munmap(auth_token_generator, sizeof(*auth_token_generator)); });
+  DEFER({ crit_munmap(auth_token_generator); });
   hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
        STR_LEN(HASH_TYPE_USER_PASSWORD), user_password, user_password_len);
   hmac_msg(auth_token_generator, *session, sizeof(*session));
@@ -488,6 +482,7 @@ int create_user_persistent_cred_secret(int secret_fd,
                                        int user_password_len,
                                        int persistent_fd) {
   const bool new_secret = (secret_fd == -1);
+  assert(new_secret == (session_encrypted_fd == -1));
   if (new_secret) {
     PROP_ERR(secret_fd = memfd_secret(O_CLOEXEC));
     PROP_ERR(ftruncate(secret_fd, sizeof(secret_state_t)));
@@ -513,14 +508,10 @@ int create_user_persistent_cred_secret(int secret_fd,
   if (persistent_len == -1) {
     return -1;
   }
-  if (session_secret_fd != -1) {
-    close(session_secret_fd);
-    if (new_secret) {
-      log_error("Generated new secret despite already having a secret");
-    }
-  } else {
-    session_secret_fd = dup(secret_fd);
+  if (session_encrypted_fd != -1) {
+    close(session_encrypted_fd);
   }
+  session_secret_fd = dup(secret_fd);
   return persistent_len;
 }
 
@@ -563,6 +554,7 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   action = set_scrypt_input_fd(action, persistent_fd);
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
+  DEFER({ crit_munmap(user_password_hash); });
   PROP_ERR(
       hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_CRIT(secret_fd = memfd_secret(O_CLOEXEC));
@@ -640,6 +632,7 @@ int unlock_plain_user_secret(const unsigned char *user_password,
   action.op = DECRYPT;
   sha256_hash_t *user_password_hash;
   crit_memfd_secret_alloc(user_password_hash);
+  DEFER({ crit_munmap(user_password_hash); });
   PROP_ERR(
       hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
@@ -659,12 +652,12 @@ int unlock_plain_user_secret(const unsigned char *user_password,
   return 0;
 }
 
-int lock_plain_user_secret() {
+__attribute__((destructor)) int lock_plain_user_secret() {
   if (session_secret_fd != -1) {
     int fd = session_secret_fd;
+    DEFER({ close(fd); });
     session_secret_fd = -1;
-    set_memfd_random(fd, sizeof(secret_state_t));
-    return close(fd);
+    return set_memfd_random(fd, sizeof(secret_state_t));
   }
   return 0;
 }
