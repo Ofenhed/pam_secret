@@ -1,5 +1,5 @@
 #CFLAGS += -std=c23 -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
-pam_secret_group = qubes
+pam_secret_group ?= enc-auth
 CFLAGS += -std=c23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wformat=2 -Wformat-security -D__USE_GNU -D_GNU_SOURCE -DSERVICE_GROUP=$(pam_secret_group)
 # CFLAGS += -Wconversion
 pam_lib_dir = /usr/lib64/security
