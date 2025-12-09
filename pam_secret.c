@@ -4,6 +4,8 @@
 #include "hash.h"
 #include "ipc.h"
 #include "log.h"
+#include "manager_group.h"
+#include "path.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>
@@ -94,10 +96,11 @@ static int pam_save_user_uid(pam_handle_t *pamh) {
     return PAM_SYSTEM_ERR;
   }
   __pam_secret_saved_user_uid = userPwd->pw_uid;
-  struct group *group = getgrnam(manager_group_name());
+  auto manager_group = manager_group_name;
+  struct group *group = getgrnam(manager_group);
   if (group == NULL) {
     errno = ENOENT;
-    log_error("Could not find group %s", manager_group_name());
+    log_error("Could not find group %s", manager_group);
     return PAM_SYSTEM_ERR;
   }
   char **group_member = group->gr_mem;
@@ -107,7 +110,7 @@ static int pam_save_user_uid(pam_handle_t *pamh) {
     ++group_member;
   }
   if (*group_member == NULL) {
-    log_debug("Not member of pam_secret group");
+    log_debug("Not member of %s", manager_group);
     return PAM_IGNORE;
   }
 

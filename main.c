@@ -6,6 +6,7 @@
 #include "install.h"
 #include "ipc.h"
 #include "log.h"
+#include "path.h"
 #include "utils.h"
 #include <errno.h>
 #include <fcntl.h>

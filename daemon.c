@@ -4,6 +4,7 @@
 #include "hash.h"
 #include "ipc.h"
 #include "log.h"
+#include "path.h"
 #include "utils.h"
 #include <assert.h>
 #include <errno.h>

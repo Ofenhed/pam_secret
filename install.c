@@ -1,5 +1,7 @@
 #include "creds.h"
 #include "utils.h"
+#include "path.h"
+#include "manager_group.h"
 #include <errno.h>
 #include <grp.h>
 #include <linux/fs.h>
@@ -14,7 +16,7 @@ int set_system_secret_immutable() {
   int wd;
   PROP_ERR(wd = get_persistent_storage_fd());
   int fd;
-  PROP_ERR(fd = openat(wd, get_system_secret_filename(), O_RDONLY, 0));
+  PROP_ERR(fd = openat(wd, system_secret_filename, O_RDONLY, 0));
   DEFER({ close(fd); });
   int attr;
   PROP_ERR(ioctl(fd, FS_IOC_GETFLAGS, &attr));
@@ -24,7 +26,7 @@ int set_system_secret_immutable() {
 
 int maybe_create_system_secret() {
   int wd, secret_fd;
-  const char *state_filename = get_system_secret_filename();
+  const char *state_filename = system_secret_filename;
   PROP_ERR(wd = get_persistent_storage_fd());
   DEFER({ set_system_secret_immutable(); });
   if (faccessat(wd, state_filename, F_OK, 0) == 0) {
@@ -50,11 +52,11 @@ int maybe_create_system_secret() {
 }
 
 int install_persistent_credentials_directory() {
-  auto dir = get_persistent_storage_location();
+  auto dir = persistent_storage_location;
   int dir_fd;
   gid_t group;
   if ((group = manager_group()) == INVALID_GROUP) {
-    const char *group_name = manager_group_name();
+    const char *group_name = manager_group_name;
     fprintf(stderr,
             "The group %s does not exist. Please create it:\n groupadd "
             "--system %s\n",

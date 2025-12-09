@@ -2,6 +2,7 @@
 #include "extern.h"
 #include "hash.h"
 #include "log.h"
+#include "manager_group.h"
 #include "path.h"
 #include "session_mask.h"
 #include "utils.h"
@@ -20,48 +21,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifndef PASSWD_DIR
-#define PASSWD_DIR "/etc/shadow.enc"
-#endif
-
-#ifndef PERSISTENT_CREDENTIAL_FORMAT
-#define PERSISTENT_CREDENTIAL_FORMAT "protected-user-cred-%i"
-#endif
-#ifndef PERSISTENT_CREDENTIAL_REQUEST_PREFIX
-#define PERSISTENT_CREDENTIAL_REQUEST_PREFIX ".tmp-new-"
-#endif
-
 static int session_encrypted_fd = -1, session_encrypted_data_len = 0,
            session_secret_fd = -1;
-
-#ifdef SYSTEM_SECRET_FILENAME_OVERRIDE
-#define SYSTEM_SECRET_FILENAME                                                 \
-  STRINGIZE_VALUE_OF(SYSTEM_SECRET_FILENAME_OVERRIDE)
-#else
-#define SYSTEM_SECRET_FILENAME "enc-auth"
-#endif
-
-#ifdef SERVICE_GROUP
-#define SERVICE_GROUP_STR STRINGIZE_VALUE_OF(SERVICE_GROUP)
-#else
-#define SERVICE_GROUP_STR "enc-auth"
-#endif
-
-gid_t manager_group() {
-  static gid_t manager_group = INVALID_GROUP;
-  if (manager_group == INVALID_GROUP) {
-    struct group *gr = getgrnam(SERVICE_GROUP_STR);
-    if (gr == NULL) {
-      errno = ENOENT;
-      perror("Could not find group " SERVICE_GROUP_STR);
-      return -1;
-    }
-    manager_group = gr->gr_gid;
-  }
-  return manager_group;
-}
-
-const char *manager_group_name() { return SERVICE_GROUP_STR; }
 
 scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
                                       const unsigned char *secret,
@@ -127,80 +88,6 @@ int invalidate_session_secret() {
     session_secret_fd = -1;
   }
   return 0;
-}
-
-int get_persistent_secret_filename_into(uid_t user, char *path, int max_len) {
-  int written = snprintf(path, max_len, PERSISTENT_CREDENTIAL_FORMAT, user);
-  if (written >= max_len) {
-    return -1;
-  } else {
-    return written + 1;
-  }
-}
-
-const char *get_persistent_storage_location() { return PASSWD_DIR; }
-
-const char *get_system_secret_filename() { return SYSTEM_SECRET_FILENAME; }
-
-int get_persistent_storage_fd() {
-  static int storage = -1;
-  if (storage == -1) {
-    PROP_ERR(storage = open(PASSWD_DIR, O_DIRECTORY, 0));
-  }
-  return storage;
-}
-
-int get_persistent_secret_path_fd(uid_t user) {
-  static int secret_path_fd = -1;
-  static uid_t fd_user = INT_MAX;
-  if (secret_path_fd == -1 || fd_user != user) {
-    if (secret_path_fd != -1)
-      close(secret_path_fd);
-    secret_path_fd = -1;
-    int storage;
-    PROP_ERR(storage = get_persistent_storage_fd());
-    fd_user = user;
-    secret_path_fd = openat(storage, get_persistent_secret_filename(user),
-                            O_PATH | O_CLOEXEC, 0);
-  }
-  return secret_path_fd;
-}
-
-int open_persistent_secret_fd(uid_t user) {
-  int secret_path_fd = get_persistent_secret_path_fd(user);
-  int fd = openat(get_proc_self_fds_fd(), tmp_sprintf("%i", secret_path_fd),
-                  O_RDONLY | O_CLOEXEC, 0);
-  return fd;
-}
-
-int get_persistent_secret_fd(uid_t user) {
-  static int secret_fd = -1;
-  static uid_t fd_user = UINT_MAX;
-  if (secret_fd == -1 || fd_user != user) {
-    if (secret_fd != -1) {
-      close(secret_fd);
-    }
-    secret_fd = open_persistent_secret_fd(user);
-  }
-  return secret_fd;
-}
-
-const char *get_persistent_secret_filename(uid_t user) {
-  static char path[256];
-  if (get_persistent_secret_filename_into(user, path, ARR_LEN(path)) == -1) {
-    return NULL;
-  } else {
-    return path;
-  }
-}
-
-scrypt_action_t default_trivial_args() {
-  scrypt_params_local_t def = {0.1, 1 << 20, 0.1};
-  scrypt_action_t action;
-  action.op = ENCRYPT;
-  action.enc_params.params.local = def;
-  action.enc_params.is_local = true;
-  return action;
 }
 
 scrypt_action_t default_persistent_args() {
@@ -406,7 +293,7 @@ int install_user_session_cred_secret(int source_fd, uid_t user,
   int target_file_offset;
 
   const char *tmpfile = bufnprintf(
-      &printf_ptr, printf_end, "%s%n%s", PERSISTENT_CREDENTIAL_REQUEST_PREFIX,
+      &printf_ptr, printf_end, "%s%n%s", persistent_credential_request_prefix,
       &target_file_offset, get_persistent_secret_filename(user));
   const char *newfile = tmpfile + target_file_offset;
   const char *memfile_path =
@@ -519,8 +406,7 @@ int get_system_secret_fd() {
   static int fd = -1;
   if (fd == -1) {
     int wd = get_persistent_storage_fd();
-    PROP_ERR(
-        fd = openat(wd, get_system_secret_filename(), O_RDONLY | O_CLOEXEC, 0));
+    PROP_ERR(fd = openat(wd, system_secret_filename, O_RDONLY | O_CLOEXEC, 0));
   }
   return fd;
 }

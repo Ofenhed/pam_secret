@@ -7,21 +7,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-gid_t manager_group();
-const char *manager_group_name();
-const char *get_persistent_storage_location();
-const char *get_system_secret_filename();
-int get_persistent_storage_fd();
-int get_persistent_secret_fd(uid_t user);
-int open_persistent_secret_fd(uid_t user);
-int get_persistent_secret_path_fd(uid_t user);
-int get_session_secret_fd();
-int get_system_secret_fd();
-const char *get_persistent_secret_filename(uid_t user);
-
-static const uid_t INVALID_USER = UINT_MAX;
-static const gid_t INVALID_GROUP = UINT_MAX;
-
 #ifdef SECRET_LEN_OVERRIDE
 #define SECRET_LEN SECRET_LEN_OVERRIDE
 #else
