@@ -439,23 +439,43 @@ int run_daemon(const char *name, int socket_not_listening) {
             continue;
           }
           msg_info_t reply = {0};
-          if (authenticate_user(auth_mem, info.data_len) == 1) {
+          sha256_hash_t *user_password_hash;
+          crit_memfd_secret_alloc(user_password_hash);
+          DEFER({ crit_munmap(user_password_hash); });
+          PROP_CRIT(
+              hashed_user_cred(auth_mem, info.data_len, user_password_hash));
+          if (authenticate_user(user_password_hash) == 1) {
             log_debug("Creating reply\n");
             reply.kind = MSG_AUTHENTICATED;
             int auth_token_fd;
             PROP_CRIT(auth_token_fd = memfd_secret(O_CLOEXEC));
+            DEFER({
+              if (auth_token_fd != -1) {
+                close(auth_token_fd);
+              }
+            });
             PROP_CRIT(ftruncate(auth_token_fd, sizeof(sha256_hash_t)));
             sha256_hash_t *auth_token =
                 crit_mmap(NULL, sizeof(*auth_token), PROT_WRITE, MAP_SHARED,
                           auth_token_fd, 0);
+            DEFER({ crit_munmap(auth_token); });
             if (pam_translated_user_auth_token(auth_mem, info.data_len,
-                                               auth_token) != -1 &&
-                (b = new_write_buf(&peer->client_state.write_buf))) {
-              HAS_OUTPUT();
-              b->info = reply;
-              b->fd = auth_token_fd;
+                                               auth_token) != -1) {
+              int send_len;
+              while ((send_len = send_peer_msg(peer->fd, reply, &auth_token_fd,
+                                               MSG_DONTWAIT | MSG_NOSIGNAL)) ==
+                         -1 &&
+                     errno == EAGAIN)
+                ;
+              if (send_len <= 0 &&
+                  (b = new_write_buf(&peer->client_state.write_buf))) {
+                HAS_OUTPUT();
+                b->info = reply;
+                b->fd = auth_token_fd;
+                auth_token_fd = -1;
+              }
             }
-            crit_munmap(auth_token);
+            authenticate_user_post(user_password_hash);
             peer->client_state.client_has_authenticated |= 1;
           } else {
             reply.kind = MSG_NOT_AUTHENTICATED;

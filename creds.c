@@ -426,10 +426,9 @@ secret_state_t *map_session_cred() {
   return crit_mmap(NULL, sizeof(secret_state_t), PROT_READ, MAP_SHARED, fd, 0);
 }
 
-int unlock_persistent_user_secret(const unsigned char *user_password,
-                                  int user_password_len) {
+int unlock_persistent_user_secret(const sha256_hash_t *user_password_hash) {
   uid_t user = geteuid();
-  int storage_fd, persistent_fd, secret_fd, masked_fd, protected_fd;
+  int storage_fd, persistent_fd, secret_fd;
   PROP_ERR(storage_fd = get_persistent_storage_fd());
   PROP_ERR(persistent_fd = get_persistent_secret_fd(user));
   lseek(persistent_fd, SEEK_SET, 0);
@@ -437,19 +436,16 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   scrypt_action_t action = {0};
   action.op = DECRYPT;
   action = set_scrypt_input_fd(action, persistent_fd);
-  sha256_hash_t *user_password_hash;
-  crit_memfd_secret_alloc(user_password_hash);
-  DEFER({ crit_munmap(user_password_hash); });
-  PROP_ERR(
-      hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_CRIT(secret_fd = memfd_secret(O_CLOEXEC));
   DEFER({
     if (secret_fd != session_secret_fd) {
       close(secret_fd);
     }
   });
-  int secret_len = scrypt_into_fd(action, (unsigned char *)user_password_hash,
-                                  sizeof(*user_password_hash), secret_fd);
+  int secret_len;
+  PROP_ERR(secret_len =
+               scrypt_into_fd(action, (unsigned char *)user_password_hash,
+                              sizeof(*user_password_hash), secret_fd));
   if (secret_len != sizeof(secret_state_t)) {
     fprintf(stderr, "Invalid secret length %i\n", secret_len);
     return -1;
@@ -459,41 +455,10 @@ int unlock_persistent_user_secret(const unsigned char *user_password,
   }
   session_secret_fd = secret_fd;
   assert(secret_len == SECRET_LEN);
-  PROP_ERR(masked_fd = memfd_secret(O_CLOEXEC));
-  PROP_ERR(xor_secret_data_fd(secret_fd, masked_fd));
-  secret_state_t *mapped =
-      mmap(NULL, sizeof(*mapped), PROT_READ, MAP_SHARED, masked_fd, 0);
-  close(masked_fd);
-  if (mapped == MAP_FAILED) {
-    perror("Could not map masked");
-    return -1;
-  }
-  DEFER({ munmap(mapped, sizeof(*mapped)); });
-  action = set_scrypt_input_data(default_session_args(), *mapped,
-                                 sizeof(secret_state_t));
-  PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
-  DEFER({
-    if (protected_fd != session_encrypted_fd)
-      close(protected_fd);
-  });
-  int protected_len =
-      scrypt_into_fd(action, (unsigned char *)user_password_hash,
-                     sizeof(*user_password_hash), protected_fd);
-  crit_munmap(mapped);
-  if (protected_len == -1) {
-    perror("Could not read into protected");
-    return -1;
-  }
-  if (session_encrypted_fd != -1) {
-    close(session_encrypted_fd);
-  }
-  session_encrypted_data_len = protected_len;
-  session_encrypted_fd = protected_fd;
   return 0;
 }
 
-int unlock_plain_user_secret(const unsigned char *user_password,
-                             int user_password_len) {
+int unlock_plain_user_secret(const sha256_hash_t *user_password_hash) {
   if (session_encrypted_fd == -1 || session_encrypted_data_len == 0) {
     errno = ENODATA;
     return -1;
@@ -515,11 +480,6 @@ int unlock_plain_user_secret(const unsigned char *user_password,
   action =
       set_scrypt_input_data(action, encrypted_data, session_encrypted_data_len);
   action.op = DECRYPT;
-  sha256_hash_t *user_password_hash;
-  crit_memfd_secret_alloc(user_password_hash);
-  DEFER({ crit_munmap(user_password_hash); });
-  PROP_ERR(
-      hashed_user_cred(user_password, user_password_len, user_password_hash));
   PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
   DEFER({ close(protected_fd); });
   int decrypt = scrypt_into_fd(action, (unsigned char *)user_password_hash,
@@ -547,13 +507,10 @@ __attribute__((destructor)) int lock_plain_user_secret() {
   return 0;
 }
 
-int authenticate_user(const unsigned char *password, int password_len) {
-  int cached_result, persistent_result;
-  if ((cached_result = unlock_plain_user_secret(password, password_len)) ==
-      -1) {
+int authenticate_user(const sha256_hash_t *user_password_hash) {
+  if (unlock_plain_user_secret(user_password_hash) == -1) {
     if (errno == ENODATA) {
-      if ((persistent_result =
-               unlock_persistent_user_secret(password, password_len)) == -1) {
+      if (unlock_persistent_user_secret(user_password_hash) == -1) {
         if (errno == EACCES) {
           return 0;
         }
@@ -568,6 +525,42 @@ int authenticate_user(const unsigned char *password, int password_len) {
     }
   }
   return 1;
+}
+
+int authenticate_user_post(const sha256_hash_t *user_password_hash) {
+  int masked_fd, protected_fd;
+  if (session_secret_fd != -1 && session_encrypted_fd == -1) {
+    PROP_ERR(masked_fd = memfd_secret(O_CLOEXEC));
+    DEFER({ close(masked_fd); });
+    PROP_ERR(xor_secret_data_fd(session_secret_fd, masked_fd));
+    secret_state_t *mapped =
+        mmap(NULL, sizeof(*mapped), PROT_READ, MAP_SHARED, masked_fd, 0);
+    if (mapped == MAP_FAILED) {
+      perror("Could not map masked");
+      return -1;
+    }
+    DEFER({ munmap(mapped, sizeof(*mapped)); });
+    scrypt_action_t action = set_scrypt_input_data(
+        default_session_args(), *mapped, sizeof(secret_state_t));
+    PROP_ERR(protected_fd = memfd_secret(O_CLOEXEC));
+    DEFER({
+      if (protected_fd != session_encrypted_fd)
+        close(protected_fd);
+    });
+    int protected_len =
+        scrypt_into_fd(action, (unsigned char *)user_password_hash,
+                       sizeof(*user_password_hash), protected_fd);
+    if (protected_len == -1) {
+      perror("Could not read into protected");
+      return -1;
+    }
+    if (session_encrypted_fd != -1) {
+      close(session_encrypted_fd);
+    }
+    session_encrypted_data_len = protected_len;
+    session_encrypted_fd = protected_fd;
+  }
+  return 0;
 }
 
 // Args are valid until the next call to `to_scrypt_args`.

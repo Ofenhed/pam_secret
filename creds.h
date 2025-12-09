@@ -69,8 +69,10 @@ scrypt_action_t set_scrypt_input_data(scrypt_action_t params,
                                       int secret_len);
 scrypt_action_t set_scrypt_input_fd(scrypt_action_t params, int fd)
     __gcc_attribute__((fd_arg_read(2)));
-int authenticate_user(const unsigned char *password, int password_len)
-    __attribute__((warn_unused_result));
+int authenticate_user(const sha256_hash_t *user_password_hash)
+    __attribute__((warn_unused_result)) __attribute__((nonnull(1)));
+int authenticate_user_post(const sha256_hash_t *user_password_hash)
+    __attribute__((nonnull(1)));
 int lock_plain_user_secret();
 
 int set_memfd_random(int fd, int len) __attribute__((warn_unused_result));
