@@ -1,8 +1,18 @@
 #CFLAGS += -std=c23 -g -D_GNU_SOURCE -DDEBUG -DSERVICE_GROUP=qubes
 pam_secret_group ?= enc-auth
-CFLAGS += -std=c23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wformat=2 -Wformat-security -D__USE_GNU -D_GNU_SOURCE -DSERVICE_GROUP=$(pam_secret_group)
+# CFLAGS += -std=gnu23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wformat=2 -Wformat-security -D__USE_GNU -D_GNU_SOURCE -DSERVICE_GROUP=$(pam_secret_group)
+CFLAGS += -std=gnu23 -fvisibility=hidden -Wall -Wextra -Wno-unused-parameter -Wformat=2 -Wformat-security -DSERVICE_GROUP=$(pam_secret_group)
+CFLAGS += -D__USE_GNU -D_GNU_SOURCE -D__STDC_WANT_LIB_EXT1__=1
 # CFLAGS += -Wconversion
 pam_lib_dir = /usr/lib64/security
+
+static_rules ?= $(addprefix valist.,CopyToSelf Uninitialized Unterminated) $(addprefix security.,SetgidSetuidOrder FloatLoopCounter MmapWriteExec PointerSub PutenvStackArray) $(addprefix security.insecureAPI.,rand strcpy bzero bcopy bcmp) $(addprefix optin.taint.,GenericTaint TaintedAlloc TaintedDiv) $(addprefix nullability.,NullableDereferenced NullablePassedToNonnull NullableReturnedFromNonnull)
+
+ifeq '' '$(findstring clang,$(CC))'
+	COMPILER ?= gcc
+else
+	COMPILER ?= clang
+endif
 
 ifdef log_level
 	CFLAGS += -DLOG_LEVEL=$(log_level)
@@ -10,8 +20,9 @@ else
 	CFLAGS += -DLOG_LEVEL=4
 endif
 
-ifeq ($(CC), clang)
-	CFLAGS = -fblocks
+ifeq ($(COMPILER), clang)
+	CFLAGS += -fblocks
+	LDFLAGS += -lBlocksRuntime
 endif
 
 ifndef target
@@ -20,13 +31,19 @@ endif
 
 ifeq ($(target), release)
 	CFLAGS += -O2 -fstack-protector-all -Wstrict-overflow -D_FORTIFY_SOURCE=2
-	LDFLAGS += -Wl,-z,noexecstack -Wl,-z,noexecheap -Wl,-z,relro -Wl,-z,now
+	LDFLAGS += -Wl,-z,noexecstack -Wl,-z,noexecheap -Wl,-z,relro
+	ifeq ($(COMPILER), gcc)
+		LD_FLAGS += -Wl,-z,now
+	endif
 endif
 ifeq ($(target), debug)
 	CFLAGS += -DDEBUG
 endif
 
 all: build/pam_secret.so build/pam_secret
+
+static-analysis:
+	scan-build $(addprefix -enable-checker ,$(static_rules)) -v --use-cc=clang make COMPILER=clang all
 
 install-deps:
 	dnf install -Cy clangd openssl-devel pam-devel
