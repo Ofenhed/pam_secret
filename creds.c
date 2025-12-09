@@ -108,7 +108,6 @@ scrypt_action_t default_session_args() {
   return action;
 }
 
-// This will leak file descriptors on failure
 // out_secret_fd should be an memfd_secret
 // Returns size of read data
 int scrypt_into_fd(scrypt_action_t params, const unsigned char *user_password,
@@ -347,6 +346,7 @@ int pam_translated_user_auth_token(const unsigned char *user_password,
   secret_state_t *session;
   if (!(session = map_session_cred()))
     return -1;
+  DEFER({ crit_munmap(session); });
 
   hash_state_t *auth_token_generator;
   crit_memfd_secret_alloc(auth_token_generator);
@@ -354,7 +354,6 @@ int pam_translated_user_auth_token(const unsigned char *user_password,
   hmac(auth_token_generator, HASH_TYPE_USER_PASSWORD,
        STR_LEN(HASH_TYPE_USER_PASSWORD), user_password, user_password_len);
   hmac_msg(auth_token_generator, *session, sizeof(*session));
-  crit_munmap(session);
   secret_state_t *system_secret =
       crit_mmap(NULL, sizeof(*system_secret), PROT_READ, MAP_SHARED,
                 get_system_secret_fd(), 0);
