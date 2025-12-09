@@ -4,13 +4,13 @@
 This program creates a persistent random seed based on protected files and the
 user's password. It can be called as `pam_secret s=qvm s=personal s=mail` and
 will return a cryptographically secure random hex encoded string, which is
-persistent based on the system secret, user `persistent key` and user password.
-Everything on the command line of `pam_secret` will be executed in the same
-session. Note that the hash requires the `session secret` to be decrypted, but
-the hash will depend on whether the user is authenticated in the current
-session. This means that `pam_secret s=some_key` will return a different value
-from `pam_secret auth s=some_key`. This difference is based on hard coded
-values, changing your password does not invalidate any persistence.
+persistent based on the system secret and user `persistent key`. Everything on
+the command line of `pam_secret` will be executed in the same session. Note
+that the hash requires the `session secret` to be decrypted, but the hash will
+depend on whether the user is authenticated in the current session. This means
+that `pam_secret s=some_key` will return a different value from `pam_secret
+auth s=some_key`. This difference is based on hard coded values, changing your
+password does not invalidate any persistence.
 
 This program acts as a PAM module that forks to a daemon. The daemon has access
 to a system secret and the user's encrypted state. The encrypted state is
