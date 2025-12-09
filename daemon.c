@@ -36,7 +36,6 @@ int connect_daemon(uid_t(get_target_user)()) {
 
 typedef int server_state_t;
 
-struct write_buf_t;
 typedef struct write_buf_t {
   enum {
     WRITE_BUF_DATA,
@@ -182,7 +181,8 @@ int run_daemon(const char *name, int socket_not_listening) {
   }
   unlink(address.sun_path);
   mode_t umask_before = umask((mode_t)~0600);
-  int server = socket(AF_UNIX, SOCK_STREAM, 0);
+  int server;
+  PROP_CRIT(server = socket(AF_UNIX, SOCK_STREAM, 0));
   PROP_CRIT(fcntl(server, F_SETFD, FD_CLOEXEC));
   PROP_CRIT(bind(server, (struct sockaddr *)(&address), sizeof(address)));
   PROP_CRIT(inotify_run_dir_modified = inotify_add_watch(
@@ -278,9 +278,12 @@ int run_daemon(const char *name, int socket_not_listening) {
             free(peer);
             goto next_event;
           }
-          int send_len =
-              send_peer_msg(peer->fd, write_buf->info, &write_buf->fd,
-                            MSG_DONTWAIT | MSG_NOSIGNAL);
+          int send_len;
+          while ((send_len =
+                      send_peer_msg(peer->fd, write_buf->info, &write_buf->fd,
+                                    MSG_DONTWAIT | MSG_NOSIGNAL)) == -1 &&
+                 errno == EAGAIN)
+            ;
           if (send_len == 0) {
             write_buf->buf_kind = WRITE_BUF_CLOSE;
             free_write_buf(write_buf->next);
@@ -288,8 +291,7 @@ int run_daemon(const char *name, int socket_not_listening) {
             peer->client_state.write_buf = write_buf->next;
             write_buf->next = NULL;
             free_write_buf(write_buf);
-          } else if (send_len == -1 &&
-                     (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          } else if (send_len == -1 && errno == EWOULDBLOCK) {
             break;
           } else if (send_len == -1 && errno == EPIPE) {
             free_write_buf(peer->client_state.write_buf);
@@ -426,8 +428,8 @@ int run_daemon(const char *name, int socket_not_listening) {
             if ((b = new_write_buf(&peer->client_state.write_buf))) {
               HAS_OUTPUT();
               b->buf_kind = WRITE_BUF_CLOSE;
-              continue;
             }
+            continue;
           }
           if ((auth_mem = mmap(NULL, info.data_len, PROT_READ, MAP_SHARED,
                                msg_fd, 0)) == MAP_FAILED) {

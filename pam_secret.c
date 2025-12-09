@@ -202,6 +202,11 @@ static int read_auth_token(pam_handle_t *pamh, int auth_token, int secret_fd) {
 static int transform_auth_token(pam_handle_t *pamh, int pam_item_id,
                                 int auth_token) {
   sha256_hash_t *new_user_cred_raw;
+  if (pam_item_id == PAM_OLDAUTHTOK && getuid() == 0) {
+    pam_set_item(pamh, PAM_OLDAUTHTOK, NULL);
+    log_debug("Skipping oldauthtok overwrite because user is root");
+    return PAM_SUCCESS;
+  }
   if ((new_user_cred_raw = mmap(NULL, sizeof(*new_user_cred_raw), PROT_READ,
                                 MAP_SHARED, auth_token, 0)) != MAP_FAILED) {
     DEFER({ munmap(new_user_cred_raw, sizeof(*new_user_cred_raw)); });
@@ -269,7 +274,8 @@ static int do_authenticate(pam_handle_t *pamh, int auth_token, int flags,
     log_debug("Got message %i", msg.kind);
 
     if (msg.kind == MSG_AUTHENTICATED) {
-      log_debug("Authentication successful");
+      log_debug("Authentication successful, translate_authtok=%i",
+                args->translate_authtok);
       if (args->translate_authtok) {
         transform_auth_token(pamh, auth_token, msg_fd);
       }
@@ -298,9 +304,14 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
   int auto_install = args.auto_install &&
                      authentication_result == PAM_AUTH_ERR &&
                      !has_persistent_secret;
+  DEFER({ log_debug("pam_sm_chauthtok returned %i", authentication_result); });
   if (flags & PAM_PRELIM_CHECK) {
-    if (!has_persistent_secret)
-      return authentication_result = PAM_SUCCESS;
+    if (!has_persistent_secret) {
+      if (args.auto_install) {
+        return authentication_result = PAM_SUCCESS;
+      }
+      return authentication_result = PAM_IGNORE;
+    }
     return authentication_result =
                do_authenticate(pamh, PAM_OLDAUTHTOK, flags, &args);
   } else if (flags & PAM_UPDATE_AUTHTOK &&
@@ -309,7 +320,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
     if (has_persistent_secret) {
       int sock = daemon_socket(true);
       if (sock == -1 && errno == ENOENT) {
-        return PAM_IGNORE;
+        return authentication_result = PAM_IGNORE;
       }
       log_debug("Trying to install new auth token, auto install is %i",
                 auto_install);
@@ -317,18 +328,18 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       if (secret_fd == -1) {
         log_error("Could not create memfd secret");
         daemon_socket(0);
-        return PAM_BUF_ERR;
+        return authentication_result = PAM_BUF_ERR;
       }
       DEFER({ close(secret_fd); });
       int secret_len;
       if ((secret_len = read_auth_token(pamh, PAM_AUTHTOK, secret_fd)) == -1) {
         log_error("Could not read auth token");
         daemon_socket(0);
-        return PAM_CRED_INSUFFICIENT;
+        return authentication_result = PAM_CRED_INSUFFICIENT;
       }
       if (secret_len == 0) {
         log_error("Not accepting empty password");
-        return PAM_CRED_INSUFFICIENT;
+        return authentication_result = PAM_CRED_INSUFFICIENT;
       }
       msg_info_t msg;
       msg.data_len = secret_len;
@@ -336,7 +347,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       if (send_peer_msg(sock, msg, &secret_fd, 0) == -1) {
         log_error("Could not send message to daemon");
         daemon_socket(0);
-        return PAM_SERVICE_ERR;
+        return authentication_result = PAM_SERVICE_ERR;
       }
       while (true) {
         int msg_fd;
@@ -348,18 +359,18 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
         if (len == -1 || len == 0) {
           log_error("Could not receive message from daemon");
           daemon_socket(0);
-          return PAM_SERVICE_ERR;
+          return authentication_result = PAM_SERVICE_ERR;
         }
         if (msg.kind == MSG_UPDATE_PASSWORD_SUCCESS) {
           log_debug("Password change success");
           transform_auth_token(pamh, PAM_AUTHTOK, msg_fd);
           daemon_socket(0);
-          return PAM_SUCCESS;
+          return authentication_result = PAM_SUCCESS;
         } else if (msg.kind == MSG_UNKNOWN_ERROR ||
                    msg.kind == MSG_NOT_AUTHENTICATED) {
           log_debug("Password change failed");
           daemon_socket(0);
-          return PAM_SERVICE_ERR;
+          return authentication_result = PAM_SERVICE_ERR;
         } else {
           log_trace("Got unexpected message %i", msg.kind);
         }
@@ -371,28 +382,26 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       int retval = pam_get_authtok(pamh, PAM_AUTHTOK, &p_auth_token, NULL);
       if (retval != PAM_SUCCESS) {
         fprintf(flog, "Could not read auth token for user\n");
-        return retval;
+        return authentication_result = retval;
       }
       const size_t auth_token_len = strlen(p_auth_token);
 
       int new_token =
           open(get_runtime_dir(pam_get_user_uid), O_TMPFILE | O_RDWR, 0400);
-      int cred_len;
-      if ((cred_len = create_user_persistent_cred_secret(
-               -1, (unsigned char *)p_auth_token, auth_token_len, new_token)) ==
-          -1) {
+      if (create_user_persistent_cred_secret(-1, (unsigned char *)p_auth_token,
+                                             auth_token_len, new_token) == -1) {
         log_error("Could not create persistent secret: %s", strerror(errno));
         close(new_token);
-        return PAM_SYSTEM_ERR;
+        return authentication_result = PAM_SYSTEM_ERR;
       }
       uid_t target_user = pam_get_user_uid();
       if (target_user == INVALID_USER) {
-        return PAM_SYSTEM_ERR;
+        return authentication_result = PAM_SYSTEM_ERR;
       }
       if (install_user_session_cred_secret(new_token, target_user, true) ==
           -1) {
         log_error("Could not install persistent secret: %s", strerror(errno));
-        return PAM_SYSTEM_ERR;
+        return authentication_result = PAM_SYSTEM_ERR;
       }
       get_persistent_secret_filename(target_user);
       if (args.translate_authtok) {
@@ -400,7 +409,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
         if (pam_translated_user_auth_token((unsigned char *)p_auth_token,
                                            auth_token_len,
                                            &new_auth_token_raw) == -1) {
-          return PAM_SYSTEM_ERR;
+          return authentication_result = PAM_SYSTEM_ERR;
         }
         sha256_hash_hex_t token = hash_to_hex(&new_auth_token_raw);
         log_debug("Setting authentication token to %s", token.printable);
@@ -408,7 +417,7 @@ EXPORTED PAM_EXTERN int pam_sm_chauthtok(pam_handle_t *pamh, int flags,
       }
     }
   }
-  return PAM_IGNORE;
+  return authentication_result = PAM_IGNORE;
 }
 
 /* expected hook, this is where custom stuff happens */
@@ -423,5 +432,7 @@ EXPORTED PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
   if ((tmp = pam_save_user_uid(pamh)) != PAM_SUCCESS) {
     return tmp;
   }
-  return do_authenticate(pamh, PAM_AUTHTOK, flags, &args);
+  int result = do_authenticate(pamh, PAM_AUTHTOK, flags, &args);
+  log_debug("pam_sm_authenticate returned %i", result);
+  return result;
 }

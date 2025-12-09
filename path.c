@@ -10,7 +10,8 @@
 #ifndef PERSISTENT_CREDENTIAL_REQUEST_PREFIX
 #define PERSISTENT_CREDENTIAL_REQUEST_PREFIX ".tmp-new-"
 #endif
-const char *persistent_credential_request_prefix = PERSISTENT_CREDENTIAL_REQUEST_PREFIX;
+const char *persistent_credential_request_prefix =
+    PERSISTENT_CREDENTIAL_REQUEST_PREFIX;
 
 #ifndef PASSWD_DIR
 #define PASSWD_DIR "/etc/shadow.enc"

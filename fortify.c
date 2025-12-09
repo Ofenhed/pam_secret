@@ -81,8 +81,7 @@ int init_privileged() {
   auto caps = cap_get_proc();
   DEFER({ cap_free(caps); });
   PROP_CRIT(_gain_root_privileges(caps));
-  int persistent_storage;
-  if ((persistent_storage = get_persistent_storage_fd()) == -1) {
+  if (get_persistent_storage_fd() == -1) {
     log_error("pam_secret is not installed");
     exit(ENOENT);
   }
@@ -97,13 +96,14 @@ int init_privileged() {
   PROP_CRIT(_drop_root_privileges(caps, 1));
   if ((my_cred = open_persistent_secret_fd(user)) == -1) {
     log_warning("No user credential installed");
-  }
-  fchmod(my_cred, 0400);
-  DEFER({ close(my_cred); });
-  struct stat stats;
-  fstat(my_cred, &stats);
-  if (stats.st_uid != user) {
-    log_error("I don't own my secret\n");
+  } else {
+    PROP_CRIT(fchmod(my_cred, 0400));
+    struct stat stats;
+    fstat(my_cred, &stats);
+    close(my_cred);
+    if (stats.st_uid != user) {
+      log_error("I don't own my secret\n");
+    }
   }
   return 0;
 }

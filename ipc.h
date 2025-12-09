@@ -1,6 +1,7 @@
 #pragma once
 
-#include <stddef.h>
+#include <stdlib.h>
+
 typedef struct {
   enum {
     MSG_INVALID = -1,

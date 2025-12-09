@@ -79,4 +79,10 @@ int get_default_log_output(void) { return default_log_output; }
 
 #define ADD_LOGGER(LEVEL, LEVEL_ID) LOG_LEVEL_##LEVEL_ID(LEVEL)
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunknown-pragmas"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
 #include "log_impls.incl"
+#pragma clang diagnostic pop
+#pragma GCC diagnotic pop

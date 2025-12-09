@@ -75,19 +75,25 @@ int read_secret_password(char *restrict password, int password_len,
   va_list format_args;
   int tty_detected = isatty(fileno(stdin));
 
-  va_start(format_args, format);
-  if (tty_detected) {
-    tcgetattr(fileno(stdout), &saved_flags);
-    tmp_flags = saved_flags;
-    tmp_flags.c_lflag &= ~ECHO;
-    tmp_flags.c_lflag |= ECHONL;
+  {
+    va_start(format_args, format);
+    if (tty_detected) {
+      tcgetattr(fileno(stdout), &saved_flags);
+      tmp_flags = saved_flags;
+      tmp_flags.c_lflag &= ~ECHO;
+      tmp_flags.c_lflag |= ECHONL;
 
-    PROP_ERR(tcsetattr(fileno(stdout), TCSANOW, &tmp_flags));
+      if (tcsetattr(fileno(stdout), TCSANOW, &tmp_flags) == -1) {
+          va_end(format_args);
+          log_error("Could not set attribute TCSANOW");
+          return -1;
+      }
 
-    vfprintf(stdout, format, format_args);
-    fflush(stdout);
+      vfprintf(stdout, format, format_args);
+      fflush(stdout);
+    }
+    va_end(format_args);
   }
-  va_end(format_args);
   char *password_ptr = password;
   const char *const password_end = password_ptr + password_len;
   int read_error = 0;

@@ -1,6 +1,5 @@
 #pragma once
 #include <sys/types.h>
-#define __STDC_WANT_LIB_EXT1__
 #include <string.h>
 
 #ifndef __STDC_LIB_EXT1__

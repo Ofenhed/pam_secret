@@ -15,7 +15,6 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -116,10 +115,8 @@ EXPORTED int libpam_secret_exported_main(int argc, char **argv) {
         fprintf(stderr, "Aborted\n");
         return 0;
       }
-      int cred_len;
-      if ((cred_len = create_user_persistent_cred_secret(
-               -1, (unsigned char *)*password, password_len, secret_fd)) ==
-          -1) {
+      if (create_user_persistent_cred_secret(-1, (unsigned char *)*password,
+                                             password_len, secret_fd) == -1) {
         perror("Could not create session");
         return -1;
       }

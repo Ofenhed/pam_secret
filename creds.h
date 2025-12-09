@@ -84,7 +84,6 @@ int to_scrypt_args(scrypt_action_t *params, const char ***args,
             __attribute__((nonnull(1, 2, 3)))
             __attribute__((warn_unused_result));
 
-scrypt_action_t default_trivial_args();
 scrypt_action_t default_persistent_args();
 scrypt_action_t default_session_args();
 

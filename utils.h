@@ -4,8 +4,10 @@
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -75,6 +77,8 @@ static inline void defer_cleanup(void (^*b)(void)) { (*b)(); }
 
 static const int PIPE_RX = 0;
 static const int PIPE_TX = 1;
+static const uid_t INVALID_USER = UINT_MAX;
+static const gid_t INVALID_GROUP = UINT_MAX;
 
 const char *vbufnprintf(char **restrict buf, const char *restrict const buf_end,
                         const char *restrict format, va_list list)
@@ -98,7 +102,8 @@ int add_arg(const char ***args, const char *const *const args_end,
 const char *get_runtime_dir(uid_t(get_target_user)(void));
 
 __gcc_attribute__((fd_arg(1))) inline static int inherit_fd(int fd) {
-  int new_fd = dup(fd);
+  int new_fd;
+  PROP_CRIT(new_fd = dup(fd));
   dup2(fd, new_fd);
   return new_fd;
 }
